@@ -383,20 +383,23 @@ impl Ratecontroller {
                 );
 
                 if let Some(ref mut fd) = stats_fd {
-                    if let Err(e) = fd.write_all(
-                        format!(
-                            "{},{},{},{},{},{},{},{}\n",
-                            stats_time.secs(),
-                            stats_time.nsecs(),
-                            self.state_dl.load,
-                            self.state_ul.load,
-                            self.state_dl.delta_stat,
-                            self.state_ul.delta_stat,
-                            self.state_dl.current_rate as u64,
-                            self.state_ul.current_rate as u64
+                    if let Err(e) = fd
+                        .write_all(
+                            format!(
+                                "{},{},{},{},{},{},{},{}\n",
+                                stats_time.secs(),
+                                stats_time.nsecs(),
+                                self.state_dl.load,
+                                self.state_ul.load,
+                                self.state_dl.delta_stat,
+                                self.state_ul.delta_stat,
+                                self.state_dl.current_rate as u64,
+                                self.state_ul.current_rate as u64
+                            )
+                            .as_bytes(),
                         )
-                        .as_bytes(),
-                    ) {
+                        .and_then(|_| fd.flush())
+                    {
                         warn!("Failed to write statistics: {}", e);
                     }
                 }
@@ -420,6 +423,10 @@ impl Ratecontroller {
                         ) {
                             warn!("Failed to write speed history file: {}", e);
                         }
+                    }
+
+                    if let Err(e) = fd.flush() {
+                        warn!("Failed to flush speed history file: {}", e);
                     }
 
                     lastdump_t = now_t;
