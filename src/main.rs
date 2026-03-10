@@ -17,12 +17,19 @@ use ::log::{debug, info};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
-use std::sync::mpsc::channel;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
 use std::{process, thread};
+
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn signal_handler(_: libc::c_int) {
+    SHUTDOWN.store(true, Ordering::Relaxed);
+}
 
 use crate::config::{Config, MeasurementType};
 use crate::netlink::Netlink;
@@ -125,6 +132,12 @@ fn main() -> anyhow::Result<()> {
         settle_sleep_time.as_secs_f64()
     );
     sleep(settle_sleep_time);
+
+    // Register signal handlers so we can restore rates on exit
+    unsafe {
+        libc::signal(libc::SIGTERM, signal_handler as libc::sighandler_t);
+        libc::signal(libc::SIGINT, signal_handler as libc::sighandler_t);
+    }
 
     let (error_tx, error_rx) = channel::<anyhow::Error>();
 
@@ -235,9 +248,28 @@ fn main() -> anyhow::Result<()> {
     // Drop original sender so recv() unblocks if all threads exit cleanly
     drop(error_tx);
 
-    // Wait for first error
-    match error_rx.recv() {
-        Ok(e) => Err(anyhow::anyhow!("thread exited with error: {e}")),
-        Err(_) => Ok(()), // all senders dropped = all threads exited without error
-    }
+    // Wait for first error or shutdown signal
+    let result = loop {
+        match error_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(e) => break Err(anyhow::anyhow!("thread exited with error: {e}")),
+            Err(RecvTimeoutError::Disconnected) => break Ok(()),
+            Err(RecvTimeoutError::Timeout) => {
+                if SHUTDOWN.load(Ordering::Relaxed) {
+                    info!("Received shutdown signal");
+                    break Ok(());
+                }
+            }
+        }
+    };
+
+    // Restore base rates so the network isn't stuck at whatever
+    // rate we last set (which could be the minimum)
+    info!(
+        "Restoring base shaper rates (D/L): {} / {}",
+        config.download_base_kbits, config.upload_base_kbits
+    );
+    let _ = Netlink::set_qdisc_rate(down_qdisc, config.download_base_kbits as u64);
+    let _ = Netlink::set_qdisc_rate(up_qdisc, config.upload_base_kbits as u64);
+
+    result
 }
