@@ -100,7 +100,7 @@ pub trait PingSender {
         let mut socket = open_socket(type_)?;
 
         let mut seq: u16 = 0;
-        let tick_duration_ms: u16 = (tick_interval * 1000.0) as u16;
+        let tick_duration_ms: u64 = (tick_interval * 1000.0) as u64;
 
         loop {
             // Clone the reflectors vec and drop the read lock immediately —
@@ -110,12 +110,12 @@ pub trait PingSender {
             drop(reflectors_unlocked);
 
             if reflectors.is_empty() {
-                thread::sleep(Duration::from_millis(tick_duration_ms as u64));
+                thread::sleep(Duration::from_millis(tick_duration_ms));
                 continue;
             }
 
             let sleep_duration =
-                Duration::from_millis((tick_duration_ms / reflectors.len() as u16) as u64);
+                Duration::from_millis(tick_duration_ms / reflectors.len() as u64);
 
             for reflector in reflectors.iter() {
                 let addr: Ipv4Addr = match reflector {
@@ -127,11 +127,7 @@ pub trait PingSender {
                 thread::sleep(sleep_duration);
             }
 
-            if seq == u16::MAX {
-                seq = 0;
-            } else {
-                seq += 1;
-            }
+            seq = seq.wrapping_add(1);
         }
     }
 
