@@ -406,8 +406,8 @@ impl Ratecontroller {
 
             if let Some(ref mut fd) = speed_hist_fd {
                 if now_t.duration_since(lastdump_t).as_secs_f64() > 300.0 {
+                    let hist_time = Time::new(ClockId::Realtime);
                     for i in 0..self.config.speed_hist_size as usize {
-                        let hist_time = Time::new(ClockId::Realtime);
                         if let Err(e) = fd.write_all(
                             format!(
                                 "{},{},{},{}\n",
