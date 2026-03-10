@@ -20,8 +20,8 @@ impl log::Log for SimpleLogger {
                 "{} {:5} {}:{}: {}",
                 now.as_secs_f64(),
                 record.level(),
-                record.file().unwrap(),
-                record.line().unwrap(),
+                record.file().unwrap_or("?"),
+                record.line().map_or(0, |l| l),
                 record.args()
             );
         }
