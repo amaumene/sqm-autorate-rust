@@ -1,7 +1,5 @@
 use anyhow::Result;
-use log::Level;
-#[cfg(feature = "uci")]
-use log::warn;
+use log::{warn, Level};
 #[cfg(feature = "uci")]
 use rust_uci::Uci;
 use std::fs::File;
@@ -272,17 +270,37 @@ impl Config {
 
         let mut reflectors: Vec<IpAddr> = Vec::with_capacity(50);
 
-        let mut first = true;
-
-        for line in lines {
-            if first {
-                first = false;
+        for (line_num, line) in lines.enumerate() {
+            // skip CSV header
+            if line_num == 0 {
                 continue;
             }
 
             let line = line?;
-            let columns: Vec<&str> = line.split(',').collect();
-            reflectors.push(IpAddr::from_str(columns[0])?);
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let ip_str = match line.split(',').next() {
+                Some(s) if !s.is_empty() => s,
+                _ => {
+                    warn!("skipping malformed line {} in reflector list", line_num + 1);
+                    continue;
+                }
+            };
+
+            match IpAddr::from_str(ip_str) {
+                Ok(addr) => reflectors.push(addr),
+                Err(e) => {
+                    warn!(
+                        "skipping invalid IP '{}' on line {} in reflector list: {}",
+                        ip_str,
+                        line_num + 1,
+                        e
+                    );
+                }
+            }
         }
 
         Ok(reflectors)
