@@ -62,16 +62,18 @@ fn main() -> anyhow::Result<()> {
         IpAddr::from_str("94.140.14.14")?,
     ];
 
-    match reflector_pool_size > config.num_reflectors as usize {
-        true => {
-            let mut peers = reflector_peers_lock.write().unwrap();
-            peers.extend_from_slice(&default_reflectors);
-            reflector_pool.append(reflectors.as_mut());
+    {
+        let mut peers = reflector_peers_lock.write().unwrap();
+        peers.extend_from_slice(&default_reflectors);
+        // Also include the CSV reflectors as initial peers when the pool
+        // is too small for the reselection thread to run.
+        if reflector_pool_size <= config.num_reflectors as usize {
+            peers.extend_from_slice(&reflectors);
         }
-        false => {
-            let mut peers = reflector_peers_lock.write().unwrap();
-            peers.extend_from_slice(&default_reflectors);
-        }
+    }
+
+    if reflector_pool_size > config.num_reflectors as usize {
+        reflector_pool.append(reflectors.as_mut());
     }
 
     let (baseliner_stats_sender, baseliner_stats_receiver) = channel();
