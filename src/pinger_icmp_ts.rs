@@ -35,9 +35,13 @@ impl PingListener for PingerICMPTimestampListener {
                     let time_now = Time::new(ClockId::Realtime);
                     let time_since_midnight = time_now.get_time_since_midnight();
 
-                    let rtt: i64 = time_since_midnight - originate as i64;
-                    let dl_time: i64 = time_since_midnight - transmit as i64;
-                    let ul_time: i64 = receive as i64 - originate as i64;
+                    // ICMP timestamps are ms since midnight and wrap at day boundary.
+                    // If local time rolled past midnight but the remote timestamps
+                    // haven't, the subtraction goes negative. Wrap by adding a full day.
+                    const MS_PER_DAY: i64 = 86_400_000;
+                    let rtt: i64 = (time_since_midnight - originate as i64).rem_euclid(MS_PER_DAY);
+                    let dl_time: i64 = (time_since_midnight - transmit as i64).rem_euclid(MS_PER_DAY);
+                    let ul_time: i64 = (receive as i64 - originate as i64).rem_euclid(MS_PER_DAY);
 
                     Ok(PingReply {
                         reflector,
