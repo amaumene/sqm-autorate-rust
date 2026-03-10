@@ -49,25 +49,29 @@ impl ReflectorSelector {
 
             // Include all current peers
             for reflector in reflectors_peers.iter() {
-                debug!("Current peer: {}", reflector.to_string());
+                debug!("Current peer: {}", reflector);
                 next_peers.push(*reflector);
             }
 
-            for _ in 0..20 {
-                let next_candidate = &self.reflector_pool[fastrand::usize(..self.reflector_pool.len())];
-                if next_peers.contains(next_candidate) {
-                    continue;
+            // Pick new candidates from the pool via a partial Fisher-Yates shuffle.
+            // This guarantees we get up to `want` unique candidates without retries.
+            let want = 20.min(self.reflector_pool.len());
+            let mut pool = self.reflector_pool.clone();
+            for i in 0..want {
+                let j = fastrand::usize(i..pool.len());
+                pool.swap(i, j);
+                if !next_peers.contains(&pool[i]) {
+                    debug!("Next candidate: {}", pool[i]);
+                    next_peers.push(pool[i]);
                 }
-                debug!("Next candidate: {}", next_candidate.to_string());
-                next_peers.push(*next_candidate);
             }
 
             // Clone next_peers because we need it again after the baseline sleep
             // to iterate over candidates for RTT measurement.
             *reflectors_peers = next_peers.clone();
 
-            // Drop the MutexGuard explicitly, as Rust won't unlock the mutex by default
-            // until the guard goes out of scope
+            // Drop the write guard explicitly so other threads can read
+            // while we wait for baselines
             drop(reflectors_peers);
 
             debug!("Waiting for candidates to be baselined");
