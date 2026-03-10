@@ -329,12 +329,6 @@ impl Ratecontroller {
 
                 (self.state_dl.current_bytes, self.state_ul.current_bytes) =
                     get_interface_stats(&self.config, self.down_direction, self.up_direction)?;
-                if self.state_dl.current_bytes == -1 || self.state_ul.current_bytes == -1 {
-                    warn!(
-                        "One or both Netlink stats could not be read. Skipping rate control algorithm"
-                    );
-                    continue;
-                }
 
                 self.update_deltas()?;
 
