@@ -31,6 +31,7 @@ use crate::pinger_icmp::{PingerICMPEchoListener, PingerICMPEchoSender};
 use crate::pinger_icmp_ts::{PingerICMPTimestampListener, PingerICMPTimestampSender};
 use crate::ratecontroller::{Ratecontroller, StatsDirection};
 use crate::reflector_selector::ReflectorSelector;
+use crate::util::RwLockExt;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -63,7 +64,7 @@ fn main() -> anyhow::Result<()> {
     ];
 
     {
-        let mut peers = reflector_peers_lock.write().unwrap();
+        let mut peers = reflector_peers_lock.write_anyhow()?;
         peers.extend_from_slice(&default_reflectors);
         // Also include the CSV reflectors as initial peers when the pool
         // is too small for the reselection thread to run.
