@@ -15,6 +15,8 @@ use thiserror::Error;
 pub enum ConfigError {
     #[error("Invalid measurement type")]
     InvalidMeasurementType(String),
+    #[error("Invalid config value for `{0}`: {1}")]
+    InvalidValue(String, String),
     #[error("Couldn't parse value for key: `{0}`: invalid value")]
     ParseError(String),
     #[error("No config value found for key: `{0}`")]
@@ -207,7 +209,42 @@ impl Config {
         config.upload_min_kbits =
             (config.upload_base_kbits * config.upload_min_percent / 100.0).floor();
 
+        config.validate()?;
+
         Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        fn check_positive(name: &str, val: f64) -> Result<(), ConfigError> {
+            if val <= 0.0 {
+                return Err(ConfigError::InvalidValue(
+                    name.to_string(),
+                    format!("must be positive, got {}", val),
+                ));
+            }
+            Ok(())
+        }
+
+        check_positive("tick_interval", self.tick_interval)?;
+        check_positive("min_change_interval", self.min_change_interval)?;
+        check_positive("download_base_kbits", self.download_base_kbits)?;
+        check_positive("upload_base_kbits", self.upload_base_kbits)?;
+
+        if self.speed_hist_size == 0 {
+            return Err(ConfigError::InvalidValue(
+                "speed_hist_size".to_string(),
+                "must be >= 1".to_string(),
+            ));
+        }
+
+        if self.num_reflectors == 0 {
+            return Err(ConfigError::InvalidValue(
+                "num_reflectors".to_string(),
+                "must be >= 1".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     fn get<T: FromStr>(env_key: &str, uci_key: &str, default: Option<T>) -> Result<T, ConfigError> {
