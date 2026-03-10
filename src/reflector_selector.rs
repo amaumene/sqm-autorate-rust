@@ -96,9 +96,9 @@ impl ReflectorSelector {
             // Sort the candidates table now by ascending RTT
             candidates.sort_by(|a, b| a.1.cmp(&b.1));
 
-            // Now we will just limit the candidates down to 2 * num_reflectors
-            let mut num_reflectors = self.config.num_reflectors;
-            let candidate_pool_num = (2 * num_reflectors) as usize;
+            // Limit candidates down to 2 * num_reflectors
+            let num_reflectors = self.config.num_reflectors as usize;
+            let candidate_pool_num = num_reflectors.saturating_mul(2);
             candidates.truncate(candidate_pool_num);
 
             for (candidate, rtt) in candidates.iter() {
@@ -111,17 +111,11 @@ impl ReflectorSelector {
                 candidates.swap(i, j);
             }
 
-            if (candidates.len() as u8) < num_reflectors {
-                num_reflectors = candidates.len() as u8;
-            }
-
-            let mut new_peers = Vec::new();
-            for i in 0..num_reflectors {
-                new_peers.push(candidates[i as usize].0);
-                info!(
-                    "New selected peer: {}",
-                    candidates[i as usize].0.to_string()
-                );
+            let take = num_reflectors.min(candidates.len());
+            let mut new_peers = Vec::with_capacity(take);
+            for (peer, _) in &candidates[..take] {
+                new_peers.push(*peer);
+                info!("New selected peer: {}", peer);
             }
 
             *reflectors_peers = new_peers;
