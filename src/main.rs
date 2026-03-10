@@ -135,8 +135,8 @@ fn main() -> anyhow::Result<()> {
 
     // Register signal handlers so we can restore rates on exit
     unsafe {
-        libc::signal(libc::SIGTERM, signal_handler as libc::sighandler_t);
-        libc::signal(libc::SIGINT, signal_handler as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, signal_handler as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, signal_handler as *const () as libc::sighandler_t);
     }
 
     let (error_tx, error_rx) = channel::<anyhow::Error>();
