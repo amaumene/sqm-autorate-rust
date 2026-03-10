@@ -168,15 +168,10 @@ impl Ratecontroller {
                 }
 
                 if state.delta_stat > delay_ms {
-                    match state.safe_rates.get(fastrand::usize(..state.safe_rates.len())) {
-                        Some(rnd_rate) => {
-                            state.next_rate =
-                                rnd_rate.min(0.9 * state.current_rate * state.load);
-                        }
-                        None => {
-                            state.next_rate = 0.9 * state.current_rate * state.load;
-                        }
-                    }
+                    let rnd_rate =
+                        state.safe_rates[fastrand::usize(..state.safe_rates.len())];
+                    state.next_rate =
+                        rnd_rate.min(0.9 * state.current_rate * state.load);
                 }
             }
         }
