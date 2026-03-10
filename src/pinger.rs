@@ -62,7 +62,10 @@ pub trait PingListener {
                 Err(_) => continue,
             };
 
-            let addr: IpAddr = sender.as_socket().unwrap().ip();
+            let addr: IpAddr = match sender.as_socket() {
+                Some(sa) => sa.ip(),
+                None => continue,
+            };
 
             let reflectors = reflectors_lock.read_anyhow()?;
             if !reflectors.contains(&addr) {
