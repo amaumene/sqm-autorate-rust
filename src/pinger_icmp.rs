@@ -41,13 +41,14 @@ impl PingListener for PingerICMPEchoListener {
                     let time_ms = clock.to_milliseconds() as i64;
 
                     let rtt: i64 = time_ms - time_sent;
+                    let half_rtt = rtt as f64 / 2.0;
                     Ok(PingReply {
                         reflector,
                         seq: sequence,
                         rtt,
                         current_time: time_ms,
-                        down_time: (rtt / 2) as f64,
-                        up_time: (rtt / 2) as f64,
+                        down_time: half_rtt,
+                        up_time: half_rtt,
                         originate_timestamp: time_sent,
                         receive_timestamp: 0,
                         transmit_timestamp: 0,
