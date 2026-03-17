@@ -164,10 +164,18 @@ impl Ratecontroller {
                 }
 
                 if state.delta_stat > delay_ms {
-                    let rnd_rate =
-                        state.safe_rates[fastrand::usize(..state.safe_rates.len())];
+                    // scale the decrease by how bad the bloat actually is —
+                    // 1ms over threshold shouldn't be the same as 500ms over
+                    let severity = (state.delta_stat / delay_ms).min(5.0);
+                    let decrease_factor = 0.9_f64.powf(severity);
+
+                    // use median of safe_rates instead of random pick
+                    let mut sorted_rates = state.safe_rates.clone();
+                    sorted_rates.sort_by(|a, b| a.total_cmp(b));
+                    let median_rate = sorted_rates[sorted_rates.len() / 2];
+
                     state.next_rate =
-                        rnd_rate.min(0.9 * state.current_rate * state.load);
+                        median_rate.min(decrease_factor * state.current_rate * state.load);
                 }
             }
         }
