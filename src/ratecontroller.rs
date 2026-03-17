@@ -349,20 +349,21 @@ impl Ratecontroller {
                 self.calculate_rate(Direction::Down)?;
                 self.calculate_rate(Direction::Up)?;
 
-                if self.state_dl.next_rate != self.state_dl.current_rate
-                    || self.state_ul.next_rate != self.state_ul.current_rate
-                {
+                let dl_changed = (self.state_dl.next_rate - self.state_dl.current_rate).abs() > 1.0;
+                let ul_changed = (self.state_ul.next_rate - self.state_ul.current_rate).abs() > 1.0;
+
+                if dl_changed || ul_changed {
                     info!(
                         "self.state_ul.next_rate {} self.state_dl.next_rate {}",
                         self.state_ul.next_rate, self.state_dl.next_rate
                     );
                 }
 
-                if self.state_dl.next_rate != self.state_dl.current_rate {
+                if dl_changed {
                     Netlink::set_qdisc_rate(self.state_dl.qdisc, self.state_dl.next_rate as u64)?;
                 }
 
-                if self.state_ul.next_rate != self.state_ul.current_rate {
+                if ul_changed {
                     Netlink::set_qdisc_rate(self.state_ul.qdisc, self.state_ul.next_rate as u64)?;
                 }
 
