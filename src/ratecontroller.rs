@@ -198,9 +198,13 @@ impl Ratecontroller {
         state_ul.deltas.clear();
 
         let now_t = Instant::now();
-        let owd_baseline = self.owd_baseline.lock_anyhow()?;
-        let owd_recent = self.owd_recent.lock_anyhow()?;
+        let mut owd_baseline = self.owd_baseline.lock_anyhow()?;
+        let mut owd_recent = self.owd_recent.lock_anyhow()?;
         let reflectors = self.reflectors_lock.read_anyhow()?;
+
+        // prune entries for reflectors that are no longer active
+        owd_baseline.retain(|ip, _| reflectors.contains(ip));
+        owd_recent.retain(|ip, _| reflectors.contains(ip));
 
         for reflector in reflectors.iter() {
             // only consider this data if it's less than 2 * tick_duration seconds old
