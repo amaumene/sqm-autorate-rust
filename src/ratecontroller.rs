@@ -6,7 +6,7 @@ use log::{debug, info, warn};
 use rustix::thread::ClockId;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::net::IpAddr;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
@@ -410,6 +410,13 @@ impl Ratecontroller {
 
             if let Some(ref mut fd) = speed_hist_fd {
                 if now_t.duration_since(lastdump_t).as_secs_f64() > 300.0 {
+                    // rewind and truncate so the file doesn't grow forever
+                    if let Err(e) = fd.rewind().and_then(|_| fd.set_len(0)) {
+                        warn!("Failed to truncate speed history file: {}", e);
+                    }
+
+                    let _ = fd.write_all("time,counter,upspeed,downspeed\n".as_bytes());
+
                     let hist_time = Time::new(ClockId::Realtime);
                     for i in 0..self.config.speed_hist_size as usize {
                         if let Err(e) = fd.write_all(
