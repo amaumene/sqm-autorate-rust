@@ -1,5 +1,3 @@
-extern crate core;
-
 mod baseliner;
 mod config;
 mod log;
