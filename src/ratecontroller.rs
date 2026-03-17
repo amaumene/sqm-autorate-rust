@@ -141,7 +141,10 @@ impl Ratecontroller {
                     / dur.as_secs_f64();
                 state.load = state.utilisation / state.current_rate;
 
-                if state.delta_stat < delay_ms
+                // only increase when delay is well below threshold —
+                // the zone between 30% and 100% of delay_ms is a hold zone
+                // where we don't increase into growing latency
+                if state.delta_stat < delay_ms * 0.3
                     && state.load > self.config.high_load_level
                 {
                     // cap safe_rates at base_rate so load > 1.0 bursts
