@@ -1,4 +1,4 @@
-use log::{Level, LevelFilter, Metadata, Record, SetLoggerError};
+use log::{Level, Metadata, Record, SetLoggerError};
 use rustix::thread::ClockId;
 
 use crate::time::Time;
