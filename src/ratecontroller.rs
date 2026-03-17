@@ -144,7 +144,10 @@ impl Ratecontroller {
                 if state.delta_stat < delay_ms
                     && state.load > self.config.high_load_level
                 {
-                    state.safe_rates[state.nrate] = (state.current_rate * state.load).floor();
+                    // cap safe_rates at base_rate so load > 1.0 bursts
+                    // can't create a positive feedback loop
+                    state.safe_rates[state.nrate] =
+                        (state.current_rate * state.load).floor().min(base_rate);
                     let max_rate = state
                         .safe_rates
                         .iter()
@@ -166,7 +169,9 @@ impl Ratecontroller {
             }
         }
 
-        state.next_rate = state.next_rate.max(min_rate).floor();
+        // clamp between min and base_rate — going above base is pointless,
+        // CAKE can't enforce a rate higher than the physical link
+        state.next_rate = state.next_rate.clamp(min_rate, base_rate).floor();
         state.previous_bytes = state.current_bytes;
         state.prev_t = now_t;
 
