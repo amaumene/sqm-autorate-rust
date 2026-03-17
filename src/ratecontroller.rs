@@ -206,7 +206,11 @@ impl Ratecontroller {
         owd_baseline.retain(|ip, _| reflectors.contains(ip));
         owd_recent.retain(|ip, _| reflectors.contains(ip));
 
-        for reflector in reflectors.iter() {
+        // Only consider up to num_reflectors peers for rate control.
+        // During reselection the list temporarily inflates with candidates,
+        // and we don't want 20+ peers making our median delta way too optimistic.
+        let max_peers = self.config.num_reflectors as usize;
+        for reflector in reflectors.iter().take(max_peers) {
             // only consider this data if it's less than 2 * tick_duration seconds old
             if owd_baseline.contains_key(reflector)
                 && owd_recent.contains_key(reflector)
