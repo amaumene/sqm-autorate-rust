@@ -123,7 +123,10 @@ pub trait PingSender {
             for reflector in reflectors.iter() {
                 let addr: Ipv4Addr = match reflector {
                     IpAddr::V4(ipv4) => *ipv4,
-                    IpAddr::V6(_) => unimplemented!(),
+                    IpAddr::V6(_) => {
+                        warn!("Skipping IPv6 reflector {}, not supported yet", reflector);
+                        continue;
+                    }
                 };
 
                 socket.send_to(addr, self.craft_packet(id, seq))?;
