@@ -1,13 +1,14 @@
 use crate::netlink::{Netlink, NetlinkError, Qdisc};
 use crate::time::Time;
 use crate::util::{MutexExt, RwLockExt};
-use crate::{Config, ReflectorStats};
+use crate::{Config, ReflectorStats, SHUTDOWN};
 use log::{debug, info, warn};
 use rustix::thread::ClockId;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Seek, Write};
 use std::net::IpAddr;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::sleep;
@@ -321,6 +322,10 @@ impl Ratecontroller {
         }
 
         loop {
+            if SHUTDOWN.load(Ordering::Relaxed) {
+                info!("Rate controller shutting down");
+                return Ok(());
+            }
             sleep(sleep_time);
             let now_t = Instant::now();
 

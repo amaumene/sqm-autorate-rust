@@ -1,9 +1,10 @@
-use crate::MeasurementType;
+use crate::util::RwLockExt;
+use crate::{MeasurementType, SHUTDOWN};
 use icmp_socket::socket::IcmpSocket;
 use icmp_socket::{IcmpSocket4, Icmpv4Packet};
-use crate::util::RwLockExt;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -106,6 +107,10 @@ pub trait PingSender {
         let tick_duration_ms: u64 = (tick_interval * 1000.0) as u64;
 
         loop {
+            if SHUTDOWN.load(Ordering::Relaxed) {
+                info!("Ping sender shutting down");
+                return Ok(());
+            }
             // Clone the reflectors vec and drop the read lock immediately —
             // holding it for the entire tick would starve the reflector selector's write lock.
             let reflectors_unlocked = reflectors_lock.read_anyhow()?;

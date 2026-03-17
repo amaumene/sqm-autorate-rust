@@ -23,7 +23,7 @@ use std::time::Duration;
 use std::time::Instant;
 use std::{process, thread};
 
-static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn signal_handler(_: libc::c_int) {
     SHUTDOWN.store(true, Ordering::Relaxed);
