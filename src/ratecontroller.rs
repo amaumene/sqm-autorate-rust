@@ -32,14 +32,8 @@ pub enum StatsDirection {
     TX,
 }
 
-fn generate_initial_speeds(base_speed: f64, size: u32) -> Vec<f64> {
-    let mut rates = Vec::new();
-
-    for _ in 0..size {
-        rates.push((fastrand::f64() * 0.2 + 0.75) * base_speed);
-    }
-
-    rates
+fn generate_initial_speeds(min_speed: f64, size: u32) -> Vec<f64> {
+    vec![min_speed; size as usize]
 }
 
 fn get_interface_stats(
@@ -244,10 +238,10 @@ impl Ratecontroller {
     ) -> anyhow::Result<Self> {
         let dl_qdisc = Netlink::qdisc_from_ifname(config.download_interface.as_str())?;
         let dl_safe_rates =
-            generate_initial_speeds(config.download_base_kbits, config.speed_hist_size);
+            generate_initial_speeds(config.download_min_kbits, config.speed_hist_size);
         let ul_qdisc = Netlink::qdisc_from_ifname(config.upload_interface.as_str())?;
         let ul_safe_rates =
-            generate_initial_speeds(config.upload_base_kbits, config.speed_hist_size);
+            generate_initial_speeds(config.upload_min_kbits, config.speed_hist_size);
 
         let (cur_rx, cur_tx) = get_interface_stats(&config, down_direction, up_direction)?;
 
