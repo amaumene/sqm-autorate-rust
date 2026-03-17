@@ -128,11 +128,7 @@ impl Ratecontroller {
         if !state.deltas.is_empty() {
             state.next_rate = state.current_rate;
 
-            state.delta_stat = if state.deltas.len() >= 3 {
-                state.deltas[2]
-            } else {
-                state.deltas[0]
-            };
+            state.delta_stat = state.deltas[state.deltas.len() / 2];
 
             if state.delta_stat > 0.0 {
                 /*
