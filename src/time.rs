@@ -6,6 +6,7 @@ use rustix::fs::Timespec;
 use rustix::thread::ClockId;
 use rustix::time::clock_gettime;
 
+#[derive(Copy, Clone)]
 pub struct Time {
     time_s: u64,
     time_ns: u64,
