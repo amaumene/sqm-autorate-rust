@@ -69,6 +69,7 @@ impl Transport {
                                 "Failed to connect to {}:{} - {}, backoff {}s",
                                 host, port, e, reconnect_backoff
                             );
+                            // Backoff starts at 1 and doubles; never reaches 0 so overflow is not a concern.
                             *reconnect_backoff =
                                 (*reconnect_backoff * 2).min(MAX_RECONNECT_BACKOFF);
                             return;
@@ -82,6 +83,7 @@ impl Transport {
                     if let Err(e) = std::io::Write::write_all(s, full_data.as_bytes()) {
                         warn!("TCP send failed: {}", e);
                         *stream = None;
+                        // Backoff starts at 1 and doubles; never reaches 0 so overflow is not a concern.
                         *reconnect_backoff = (*reconnect_backoff * 2).min(MAX_RECONNECT_BACKOFF);
                     }
                 }
@@ -90,7 +92,7 @@ impl Transport {
     }
 }
 
-pub enum Metric {
+pub(crate) enum Metric {
     Ping {
         reflector: IpAddr,
         measurement_type: MeasurementType,
@@ -113,6 +115,8 @@ pub enum Metric {
         recent_up_ewma: f64,
         recent_down_ewma: f64,
     },
+    /// Events use `&'static str` fields for zero-allocation reporting.
+    /// Dynamic strings must be converted to static (e.g., via `Box::leak`) if needed.
     Event {
         name: &'static str,
         reason: &'static str,
@@ -125,7 +129,7 @@ pub enum Metric {
 }
 
 #[derive(Clone)]
-pub struct MetricsSender {
+pub(crate) struct MetricsSender {
     tx: Option<Sender<(Metric, u64)>>,
     dropped: Arc<AtomicU32>,
 }
@@ -155,7 +159,7 @@ impl MetricsSender {
     }
 }
 
-pub struct Metrics {
+pub(crate) struct Metrics {
     pub config: Config,
     pub metrics_dropped: Arc<AtomicU32>,
     pub metrics_rx: Receiver<(Metric, u64)>,
