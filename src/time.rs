@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2022-Present Nils Andreas Svee mailto:contact@lochnair.net (github @Lochnair)
+//
+// SPDX-License-Identifier: MPL-2.0
+
 use rustix::fs::Timespec;
 use rustix::thread::ClockId;
 use rustix::time::clock_gettime;
@@ -26,6 +30,10 @@ impl Time {
 
     pub fn nsecs(&self) -> u64 {
         self.time_ns
+    }
+
+    pub fn as_nanos(&self) -> u64 {
+        self.time_s * 1_000_000_000 + self.time_ns
     }
 
     pub fn as_secs_f64(&self) -> f64 {

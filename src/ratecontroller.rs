@@ -1,16 +1,24 @@
+// SPDX-FileCopyrightText: 2022-Present Charles Corrigan mailto:chas-iot@runegate.org (github @chas-iot)
+// SPDX-FileCopyrightText: 2022-Present Daniel Lakeland mailto:dlakelan@street-artists.org (github @dlakelan)
+// SPDX-FileCopyrightText: 2022-Present Mark Baker mailto:mark@vpost.net (github @Fail-Safe)
+// SPDX-FileCopyrightText: 2022-Present Nils Andreas Svee mailto:contact@lochnair.net (github @Lochnair)
+//
+// SPDX-License-Identifier: MPL-2.0
+
+use crate::SHUTDOWN;
+use crate::metrics::{Metric, MetricsSender};
 use crate::netlink::{Netlink, NetlinkError, Qdisc};
 use crate::time::Time;
-use crate::util::{MutexExt, RwLockExt};
-use crate::{Config, ReflectorStats, SHUTDOWN};
+use crate::util::{ArcMutex, ArcRwLock, MutexExt, RwLockExt};
+use crate::{Config, ReflectorStats};
+use flume::Sender;
 use log::{debug, info, warn};
 use rustix::thread::ClockId;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Seek, Write};
+use std::io::Write;
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, RwLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -33,8 +41,14 @@ pub enum StatsDirection {
     TX,
 }
 
-fn generate_initial_speeds(min_speed: f64, size: u32) -> Vec<f64> {
-    vec![min_speed; size as usize]
+fn generate_initial_speeds(base_speed: f64, size: u32) -> Vec<f64> {
+    let mut rates = Vec::new();
+
+    for _ in 0..size {
+        rates.push((fastrand::f64() * 0.2 + 0.75) * base_speed);
+    }
+
+    rates
 }
 
 fn get_interface_stats(
@@ -96,13 +110,14 @@ impl State {
 pub struct Ratecontroller {
     config: Config,
     down_direction: StatsDirection,
-    owd_baseline: Arc<Mutex<HashMap<IpAddr, ReflectorStats>>>,
-    owd_recent: Arc<Mutex<HashMap<IpAddr, ReflectorStats>>>,
-    reflectors_lock: Arc<RwLock<Vec<IpAddr>>>,
+    owd_baseline: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
+    owd_recent: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
+    reflectors_lock: ArcRwLock<Vec<IpAddr>>,
     reselect_trigger: Sender<bool>,
     state_dl: State,
     state_ul: State,
     up_direction: StatsDirection,
+    metrics: MetricsSender,
 }
 
 impl Ratecontroller {
@@ -129,7 +144,11 @@ impl Ratecontroller {
         if !state.deltas.is_empty() {
             state.next_rate = state.current_rate;
 
-            state.delta_stat = state.deltas[state.deltas.len() / 2];
+            state.delta_stat = if state.deltas.len() >= 3 {
+                state.deltas[2]
+            } else {
+                state.deltas[0]
+            };
 
             if state.delta_stat > 0.0 {
                 /*
@@ -142,16 +161,8 @@ impl Ratecontroller {
                     / dur.as_secs_f64();
                 state.load = state.utilisation / state.current_rate;
 
-                // only increase when delay is well below threshold —
-                // the zone between 30% and 100% of delay_ms is a hold zone
-                // where we don't increase into growing latency
-                if state.delta_stat < delay_ms * 0.3
-                    && state.load > self.config.high_load_level
-                {
-                    // cap safe_rates at base_rate so load > 1.0 bursts
-                    // can't create a positive feedback loop
-                    state.safe_rates[state.nrate] =
-                        (state.current_rate * state.load).floor().min(base_rate);
+                if state.delta_stat < delay_ms && state.load > self.config.high_load_level {
+                    state.safe_rates[state.nrate] = (state.current_rate * state.load).floor();
                     let max_rate = state
                         .safe_rates
                         .iter()
@@ -165,25 +176,22 @@ impl Ratecontroller {
                 }
 
                 if state.delta_stat > delay_ms {
-                    // scale the decrease by how bad the bloat actually is —
-                    // 1ms over threshold shouldn't be the same as 500ms over
-                    let severity = (state.delta_stat / delay_ms).min(5.0);
-                    let decrease_factor = 0.9_f64.powf(severity);
-
-                    // use median of safe_rates instead of random pick
-                    let mut sorted_rates = state.safe_rates.clone();
-                    sorted_rates.sort_by(|a, b| a.total_cmp(b));
-                    let median_rate = sorted_rates[sorted_rates.len() / 2];
-
-                    state.next_rate =
-                        median_rate.min(decrease_factor * state.current_rate * state.load);
+                    match state
+                        .safe_rates
+                        .get(fastrand::usize(..state.safe_rates.len()))
+                    {
+                        Some(rnd_rate) => {
+                            state.next_rate = rnd_rate.min(0.9 * state.current_rate * state.load);
+                        }
+                        None => {
+                            state.next_rate = 0.9 * state.current_rate * state.load;
+                        }
+                    }
                 }
             }
         }
 
-        // clamp between min and base_rate — going above base is pointless,
-        // CAKE can't enforce a rate higher than the physical link
-        state.next_rate = state.next_rate.clamp(min_rate, base_rate).floor();
+        state.next_rate = state.next_rate.max(min_rate).floor();
         state.previous_bytes = state.current_bytes;
         state.prev_t = now_t;
 
@@ -198,19 +206,11 @@ impl Ratecontroller {
         state_ul.deltas.clear();
 
         let now_t = Instant::now();
-        let mut owd_baseline = self.owd_baseline.lock_anyhow()?;
-        let mut owd_recent = self.owd_recent.lock_anyhow()?;
+        let owd_baseline = self.owd_baseline.lock_anyhow()?;
+        let owd_recent = self.owd_recent.lock_anyhow()?;
         let reflectors = self.reflectors_lock.read_anyhow()?;
 
-        // prune entries for reflectors that are no longer active
-        owd_baseline.retain(|ip, _| reflectors.contains(ip));
-        owd_recent.retain(|ip, _| reflectors.contains(ip));
-
-        // Only consider up to num_reflectors peers for rate control.
-        // During reselection the list temporarily inflates with candidates,
-        // and we don't want 20+ peers making our median delta way too optimistic.
-        let max_peers = self.config.num_reflectors as usize;
-        for reflector in reflectors.iter().take(max_peers) {
+        for reflector in reflectors.iter() {
             // only consider this data if it's less than 2 * tick_duration seconds old
             if owd_baseline.contains_key(reflector)
                 && owd_recent.contains_key(reflector)
@@ -241,7 +241,11 @@ impl Ratecontroller {
 
         if state_dl.deltas.len() < 5 || state_ul.deltas.len() < 5 {
             // trigger reselection
-            warn!("Not enough delta values, triggering reselection");
+            warn!(
+                "Not enough delta values (D: {}, U: {}, need 5), triggering reselection",
+                state_dl.deltas.len(),
+                state_ul.deltas.len()
+            );
             let _ = self.reselect_trigger.send(true);
         }
 
@@ -250,19 +254,20 @@ impl Ratecontroller {
 
     pub fn new(
         config: Config,
-        owd_baseline: Arc<Mutex<HashMap<IpAddr, ReflectorStats>>>,
-        owd_recent: Arc<Mutex<HashMap<IpAddr, ReflectorStats>>>,
-        reflectors_lock: Arc<RwLock<Vec<IpAddr>>>,
+        owd_baseline: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
+        owd_recent: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
+        reflectors_lock: ArcRwLock<Vec<IpAddr>>,
         reselect_trigger: Sender<bool>,
         down_direction: StatsDirection,
         up_direction: StatsDirection,
+        metrics: MetricsSender,
     ) -> anyhow::Result<Self> {
         let dl_qdisc = Netlink::qdisc_from_ifname(config.download_interface.as_str())?;
         let dl_safe_rates =
-            generate_initial_speeds(config.download_min_kbits, config.speed_hist_size);
+            generate_initial_speeds(config.download_base_kbits, config.speed_hist_size);
         let ul_qdisc = Netlink::qdisc_from_ifname(config.upload_interface.as_str())?;
         let ul_safe_rates =
-            generate_initial_speeds(config.upload_min_kbits, config.speed_hist_size);
+            generate_initial_speeds(config.upload_base_kbits, config.speed_hist_size);
 
         let (cur_rx, cur_tx) = get_interface_stats(&config, down_direction, up_direction)?;
 
@@ -276,6 +281,7 @@ impl Ratecontroller {
             state_dl: State::new(dl_qdisc, cur_rx, dl_safe_rates),
             state_ul: State::new(ul_qdisc, cur_tx, ul_safe_rates),
             up_direction,
+            metrics,
         })
     }
 
@@ -292,10 +298,12 @@ impl Ratecontroller {
         Netlink::set_qdisc_rate(
             self.state_dl.qdisc,
             self.state_dl.current_rate.round() as u64,
+            self.config.dry_run,
         )?;
         Netlink::set_qdisc_rate(
             self.state_ul.qdisc,
             self.state_ul.current_rate.round() as u64,
+            self.config.dry_run,
         )?;
 
         let mut speed_hist_fd: Option<File> = None;
@@ -343,21 +351,41 @@ impl Ratecontroller {
 
                 (self.state_dl.current_bytes, self.state_ul.current_bytes) =
                     get_interface_stats(&self.config, self.down_direction, self.up_direction)?;
+                if self.state_dl.current_bytes == -1 || self.state_ul.current_bytes == -1 {
+                    warn!(
+                        "One or both Netlink stats could not be read. Skipping rate control algorithm"
+                    );
+                    self.metrics.send(Metric::Event {
+                        name: "netlink_read_failure",
+                        reason: "",
+                        reflector: None,
+                        tags: &[],
+                    });
+                    continue;
+                }
 
                 self.update_deltas()?;
 
                 if self.state_dl.deltas.is_empty() || self.state_ul.deltas.is_empty() {
                     warn!("No reflector data available, dropping to minimum rates");
+                    self.metrics.send(Metric::Event {
+                        name: "reflector_unavailable",
+                        reason: "",
+                        reflector: None,
+                        tags: &[],
+                    });
                     self.state_dl.next_rate = self.config.download_min_kbits;
                     self.state_ul.next_rate = self.config.upload_min_kbits;
 
                     Netlink::set_qdisc_rate(
                         self.state_dl.qdisc,
                         self.state_dl.next_rate as u64,
+                        self.config.dry_run,
                     )?;
                     Netlink::set_qdisc_rate(
                         self.state_ul.qdisc,
                         self.state_ul.next_rate as u64,
+                        self.config.dry_run,
                     )?;
 
                     self.state_dl.current_rate = self.state_dl.next_rate;
@@ -368,22 +396,29 @@ impl Ratecontroller {
                 self.calculate_rate(Direction::Down)?;
                 self.calculate_rate(Direction::Up)?;
 
-                let dl_changed = (self.state_dl.next_rate - self.state_dl.current_rate).abs() > 1.0;
-                let ul_changed = (self.state_ul.next_rate - self.state_ul.current_rate).abs() > 1.0;
-
-                if dl_changed || ul_changed {
+                if self.state_dl.next_rate != self.state_dl.current_rate
+                    || self.state_ul.next_rate != self.state_ul.current_rate
+                {
                     info!(
-                        "self.state_ul.next_rate {} self.state_dl.next_rate {}",
-                        self.state_ul.next_rate, self.state_dl.next_rate
+                        "Adjusting rates (D/U): {} / {} kbit/s",
+                        self.state_dl.next_rate as u64, self.state_ul.next_rate as u64
                     );
                 }
 
-                if dl_changed {
-                    Netlink::set_qdisc_rate(self.state_dl.qdisc, self.state_dl.next_rate as u64)?;
+                if self.state_dl.next_rate != self.state_dl.current_rate {
+                    Netlink::set_qdisc_rate(
+                        self.state_dl.qdisc,
+                        self.state_dl.next_rate as u64,
+                        self.config.dry_run,
+                    )?;
                 }
 
-                if ul_changed {
-                    Netlink::set_qdisc_rate(self.state_ul.qdisc, self.state_ul.next_rate as u64)?;
+                if self.state_ul.next_rate != self.state_ul.current_rate {
+                    Netlink::set_qdisc_rate(
+                        self.state_ul.qdisc,
+                        self.state_ul.next_rate as u64,
+                        self.config.dry_run,
+                    )?;
                 }
 
                 self.state_dl.current_rate = self.state_dl.next_rate;
@@ -402,24 +437,30 @@ impl Ratecontroller {
                     self.state_ul.current_rate as u64
                 );
 
+                self.metrics.send(Metric::Rate {
+                    dl_rate: self.state_dl.current_rate,
+                    ul_rate: self.state_ul.current_rate,
+                    rx_load: self.state_dl.load,
+                    tx_load: self.state_ul.load,
+                    delta_delay_down: self.state_dl.delta_stat,
+                    delta_delay_up: self.state_ul.delta_stat,
+                });
+
                 if let Some(ref mut fd) = stats_fd {
-                    if let Err(e) = fd
-                        .write_all(
-                            format!(
-                                "{},{},{},{},{},{},{},{}\n",
-                                stats_time.secs(),
-                                stats_time.nsecs(),
-                                self.state_dl.load,
-                                self.state_ul.load,
-                                self.state_dl.delta_stat,
-                                self.state_ul.delta_stat,
-                                self.state_dl.current_rate as u64,
-                                self.state_ul.current_rate as u64
-                            )
-                            .as_bytes(),
+                    if let Err(e) = fd.write_all(
+                        format!(
+                            "{},{},{},{},{},{},{},{}\n",
+                            stats_time.secs(),
+                            stats_time.nsecs(),
+                            self.state_dl.load,
+                            self.state_ul.load,
+                            self.state_dl.delta_stat,
+                            self.state_ul.delta_stat,
+                            self.state_dl.current_rate as u64,
+                            self.state_ul.current_rate as u64
                         )
-                        .and_then(|_| fd.flush())
-                    {
+                        .as_bytes(),
+                    ) {
                         warn!("Failed to write statistics: {}", e);
                     }
                 }
@@ -429,15 +470,8 @@ impl Ratecontroller {
 
             if let Some(ref mut fd) = speed_hist_fd {
                 if now_t.duration_since(lastdump_t).as_secs_f64() > 300.0 {
-                    // rewind and truncate so the file doesn't grow forever
-                    if let Err(e) = fd.rewind().and_then(|_| fd.set_len(0)) {
-                        warn!("Failed to truncate speed history file: {}", e);
-                    }
-
-                    let _ = fd.write_all("time,counter,upspeed,downspeed\n".as_bytes());
-
-                    let hist_time = Time::new(ClockId::Realtime);
                     for i in 0..self.config.speed_hist_size as usize {
+                        let hist_time = Time::new(ClockId::Realtime);
                         if let Err(e) = fd.write_all(
                             format!(
                                 "{},{},{},{}\n",
@@ -450,10 +484,6 @@ impl Ratecontroller {
                         ) {
                             warn!("Failed to write speed history file: {}", e);
                         }
-                    }
-
-                    if let Err(e) = fd.flush() {
-                        warn!("Failed to flush speed history file: {}", e);
                     }
 
                     lastdump_t = now_t;

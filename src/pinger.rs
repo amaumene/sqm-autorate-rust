@@ -1,12 +1,22 @@
-use crate::util::RwLockExt;
-use crate::{MeasurementType, SHUTDOWN};
-use icmp_socket::socket::IcmpSocket;
-use icmp_socket::{IcmpSocket4, Icmpv4Packet};
+// SPDX-FileCopyrightText: 2022-Present Charles Corrigan mailto:chas-iot@runegate.org (github @chas-iot)
+// SPDX-FileCopyrightText: 2022-Present Daniel Lakeland mailto:dlakelan@street-artists.org (github @dlakelan)
+// SPDX-FileCopyrightText: 2022-Present Mark Baker mailto:mark@vpost.net (github @Fail-Safe)
+// SPDX-FileCopyrightText: 2022-Present Nils Andreas Svee mailto:contact@lochnair.net (github @Lochnair)
+//
+// SPDX-License-Identifier: MPL-2.0
+
+use crate::MeasurementType;
+use crate::SHUTDOWN;
+use crate::metrics::{Metric, MetricsSender};
+use crate::util::{MutexExt, RwLockExt};
+use flume::Sender;
+use icmp_socket2::socket::IcmpSocket;
+use icmp_socket2::{IcmpSocket4, Icmpv4Packet};
 use log::{debug, info, warn};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use std::{io, thread};
 use thiserror::Error;
@@ -25,8 +35,9 @@ pub enum PingError {
 
 pub struct PingReply {
     pub reflector: IpAddr,
+    pub measurement_type: MeasurementType,
     pub seq: u16,
-    pub rtt: i64,
+    pub rtt: f64,
     pub current_time: i64,
     pub down_time: f64,
     pub up_time: f64,
@@ -36,11 +47,19 @@ pub struct PingReply {
     pub last_receive_time_s: Instant,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct InFlightProbe {
+    pub sent_at: Instant,
+    pub originate_timestamp: i64,
+}
+
+pub type InFlightProbeKey = (IpAddr, MeasurementType, u16);
+pub type InFlightProbeCache = Arc<Mutex<HashMap<InFlightProbeKey, InFlightProbe>>>;
+const INFLIGHT_PROBE_TTL: Duration = Duration::from_secs(30);
+
 fn open_socket(type_: MeasurementType) -> io::Result<IcmpSocket4> {
     match type_ {
-        MeasurementType::Icmp | MeasurementType::IcmpTimestamps => {
-            IcmpSocket4::new()
-        },
+        MeasurementType::Icmp | MeasurementType::IcmpTimestamps => IcmpSocket4::new(),
         _ => {
             unimplemented!()
         }
@@ -53,27 +72,30 @@ pub trait PingListener {
         id: u16,
         type_: MeasurementType,
         reflectors_lock: Arc<RwLock<Vec<IpAddr>>>,
-        stats_sender: Sender<PingReply>,
+        inflight: InFlightProbeCache,
+        stats_tx: Sender<PingReply>,
+        ping_metrics: MetricsSender,
     ) -> anyhow::Result<()> {
         let socket = &mut open_socket(type_)?;
 
         loop {
+            if SHUTDOWN.load(Ordering::Relaxed) {
+                info!("Ping listener shutting down");
+                return Ok(());
+            }
             let (pkt, sender) = match socket.rcv_from() {
                 Ok(val) => val,
                 Err(_) => continue,
             };
 
-            let addr: IpAddr = match sender.as_socket() {
-                Some(sa) => sa.ip(),
-                None => continue,
-            };
+            let addr: IpAddr = sender.as_socket().unwrap().ip();
 
             let reflectors = reflectors_lock.read_anyhow()?;
             if !reflectors.contains(&addr) {
                 continue;
             }
 
-            let reply = match self.parse_packet(id, addr, pkt) {
+            let reply = match self.parse_packet(id, addr, type_, pkt) {
                 Ok(val) => val,
                 Err(_) => {
                     // parse_packet will throw an error if it's an unknown protocol etc.
@@ -82,15 +104,49 @@ pub trait PingListener {
                 }
             };
 
-            debug!("Type: {:4}  | Reflector IP: {:>15}  | Seq: {:5}  | Current time: {:8}  |  Originate: {:8}  |  Received time: {:8}  |  Transmit time : {:8}  |  RTT: {:8}  | UL time: {:5}  | DL time: {:5}", "ICMP", addr.to_string(), reply.seq, reply.current_time, reply.originate_timestamp, reply.receive_timestamp, reply.transmit_timestamp, reply.rtt, reply.up_time, reply.down_time);
-            if let Err(e) = stats_sender.send(reply) {
+            let key = (addr, type_, reply.seq);
+            let Some(probe) = inflight.lock_anyhow()?.remove(&key) else {
+                continue;
+            };
+            if reply.originate_timestamp != probe.originate_timestamp {
+                continue;
+            }
+
+            ping_metrics.send(Metric::Ping {
+                reflector: reply.reflector,
+                measurement_type: reply.measurement_type,
+                rtt: reply.rtt,
+                up_time: reply.up_time,
+                down_time: reply.down_time,
+            });
+
+            debug!(
+                "Type: {:4}  | Reflector IP: {:>15}  | Seq: {:5}  | Current time: {:8}  |  Originate: {:8}  |  Received time: {:8}  |  Transmit time : {:8}  |  RTT: {:8}  | UL time: {:5}  | DL time: {:5}",
+                "ICMP",
+                addr.to_string(),
+                reply.seq,
+                reply.current_time,
+                reply.originate_timestamp,
+                reply.receive_timestamp,
+                reply.transmit_timestamp,
+                reply.rtt,
+                reply.up_time,
+                reply.down_time
+            );
+            if let Err(e) = stats_tx.send(reply) {
                 warn!("Stats channel closed, stopping listener: {}", e);
                 break Ok(());
             }
         }
     }
 
-    fn parse_packet(&self, id: u16, reflector: IpAddr, pkt: Icmpv4Packet) -> Result<PingReply, PingError>;
+    fn parse_packet(
+        &self,
+        id: u16,
+        reflector: IpAddr,
+        measurement_type: MeasurementType,
+        pkt: Icmpv4Packet,
+    ) -> Result<PingReply, PingError>;
 }
 
 pub trait PingSender {
@@ -99,12 +155,13 @@ pub trait PingSender {
         id: u16,
         type_: MeasurementType,
         reflectors_lock: Arc<RwLock<Vec<IpAddr>>>,
+        inflight: InFlightProbeCache,
         tick_interval: f64,
     ) -> anyhow::Result<()> {
         let mut socket = open_socket(type_)?;
 
         let mut seq: u16 = 0;
-        let tick_duration_ms: u64 = (tick_interval * 1000.0) as u64;
+        let tick_duration_ms: u16 = (tick_interval * 1000.0) as u16;
 
         loop {
             if SHUTDOWN.load(Ordering::Relaxed) {
@@ -118,23 +175,37 @@ pub trait PingSender {
             drop(reflectors_unlocked);
 
             if reflectors.is_empty() {
-                thread::sleep(Duration::from_millis(tick_duration_ms));
+                thread::sleep(Duration::from_millis(tick_duration_ms as u64));
                 continue;
             }
 
+            inflight
+                .lock_anyhow()?
+                .retain(|_, probe| probe.sent_at.elapsed() < INFLIGHT_PROBE_TTL);
+
             let sleep_duration =
-                Duration::from_millis(tick_duration_ms / reflectors.len() as u64);
+                Duration::from_millis((tick_duration_ms / reflectors.len() as u16) as u64);
 
             for reflector in reflectors.iter() {
                 let addr: Ipv4Addr = match reflector {
                     IpAddr::V4(ipv4) => *ipv4,
-                    IpAddr::V6(_) => {
-                        warn!("Skipping IPv6 reflector {}, not supported yet", reflector);
-                        continue;
-                    }
+                    IpAddr::V6(_) => unimplemented!(),
                 };
 
-                socket.send_to(addr, self.craft_packet(id, seq))?;
+                let (packet, originate_timestamp) = self.craft_packet(id, seq);
+                let sent_at = Instant::now();
+                let key = (*reflector, type_, seq);
+                inflight.lock_anyhow()?.insert(
+                    key,
+                    InFlightProbe {
+                        sent_at,
+                        originate_timestamp,
+                    },
+                );
+                if let Err(e) = socket.send_to(addr, packet) {
+                    inflight.lock_anyhow()?.remove(&key);
+                    return Err(e.into());
+                }
                 thread::sleep(sleep_duration);
             }
 
@@ -142,5 +213,5 @@ pub trait PingSender {
         }
     }
 
-    fn craft_packet(&self, id: u16, seq: u16) -> icmp_socket::packet::Icmpv4Packet;
+    fn craft_packet(&self, id: u16, seq: u16) -> (icmp_socket2::packet::Icmpv4Packet, i64);
 }

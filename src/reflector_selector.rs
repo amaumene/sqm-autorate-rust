@@ -1,20 +1,30 @@
-use crate::util::{MutexExt, RwLockExt};
-use crate::{Config, ReflectorStats, SHUTDOWN};
+// SPDX-FileCopyrightText: 2022-Present Charles Corrigan mailto:chas-iot@runegate.org (github @chas-iot)
+// SPDX-FileCopyrightText: 2022-Present Daniel Lakeland mailto:dlakelan@street-artists.org (github @dlakelan)
+// SPDX-FileCopyrightText: 2022-Present Mark Baker mailto:mark@vpost.net (github @Fail-Safe)
+// SPDX-FileCopyrightText: 2022-Present Nils Andreas Svee mailto:contact@lochnair.net (github @Lochnair)
+//
+// SPDX-License-Identifier: MPL-2.0
+
+use crate::SHUTDOWN;
+use crate::metrics::{Metric, MetricsSender};
+use crate::util::{ArcMutex, MutexExt, RwLockExt};
+use crate::{Config, ReflectorStats};
+use flume::Receiver;
 use log::{debug, info};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::thread::sleep;
 use std::time::Duration;
 
 pub struct ReflectorSelector {
     pub config: Config,
-    pub owd_recent: Arc<Mutex<HashMap<IpAddr, ReflectorStats>>>,
+    pub owd_recent: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
     pub reflector_peers_lock: Arc<RwLock<Vec<IpAddr>>>,
     pub reflector_pool: Vec<IpAddr>,
     pub trigger_channel: Receiver<bool>,
+    pub metrics: MetricsSender,
 }
 
 impl ReflectorSelector {
@@ -23,7 +33,6 @@ impl ReflectorSelector {
         let mut reselection_count = 0;
         let baseline_sleep_time =
             Duration::from_secs_f64(self.config.tick_interval * std::f64::consts::PI);
-
         // Initial wait of several seconds to allow some OWD data to build up
         sleep(baseline_sleep_time);
 
@@ -37,12 +46,18 @@ impl ReflectorSelector {
              * or it passes the timeout. In any case we don't care about the result of this function,
              * so we ignore the result of it.
              */
-            let _ = self
+            let triggered = self
                 .trigger_channel
                 .recv_timeout(selector_sleep_time)
-                .unwrap_or(true);
+                .is_ok();
             reselection_count += 1;
             info!("Starting reselection [#{}]", reselection_count);
+            self.metrics.send(Metric::Event {
+                name: "reflector_selection",
+                reason: if triggered { "triggered" } else { "timeout" },
+                reflector: None,
+                tags: &[],
+            });
 
             // After 40 reselections, slow down to every 15 minutes
             if reselection_count > 40 {
@@ -58,25 +73,22 @@ impl ReflectorSelector {
                 next_peers.push(*reflector);
             }
 
-            // Pick new candidates from the pool via a partial Fisher-Yates shuffle.
-            // This guarantees we get up to `want` unique candidates without retries.
-            let want = 20.min(self.reflector_pool.len());
-            let mut pool = self.reflector_pool.clone();
-            for i in 0..want {
-                let j = fastrand::usize(i..pool.len());
-                pool.swap(i, j);
-                if !next_peers.contains(&pool[i]) {
-                    debug!("Next candidate: {}", pool[i]);
-                    next_peers.push(pool[i]);
+            for _ in 0..20 {
+                let next_candidate =
+                    &self.reflector_pool[fastrand::usize(..self.reflector_pool.len())];
+                if next_peers.contains(next_candidate) {
+                    continue;
                 }
+                debug!("Next candidate: {}", next_candidate);
+                next_peers.push(*next_candidate);
             }
 
             // Clone next_peers because we need it again after the baseline sleep
             // to iterate over candidates for RTT measurement.
             *reflectors_peers = next_peers.clone();
 
-            // Drop the write guard explicitly so other threads can read
-            // while we wait for baselines
+            // Drop the MutexGuard explicitly, as Rust won't unlock the mutex by default
+            // until the guard goes out of scope
             drop(reflectors_peers);
 
             debug!("Waiting for candidates to be baselined");
@@ -93,11 +105,11 @@ impl ReflectorSelector {
                 if owd_recent.contains_key(&peer) {
                     let rtt = (owd_recent[&peer].down_ewma + owd_recent[&peer].up_ewma) as u64;
                     candidates.push((peer, rtt));
-                    info!("Candidate reflector: {} RTT: {}", peer.to_string(), rtt);
+                    info!("Candidate reflector: {} RTT: {}", peer, rtt);
                 } else {
                     info!(
                         "No data found from candidate reflector: {} - skipping",
-                        peer.to_string()
+                        peer
                     );
                 }
             }
@@ -105,9 +117,9 @@ impl ReflectorSelector {
             // Sort the candidates table now by ascending RTT
             candidates.sort_by(|a, b| a.1.cmp(&b.1));
 
-            // Limit candidates down to 2 * num_reflectors
-            let num_reflectors = self.config.num_reflectors as usize;
-            let candidate_pool_num = num_reflectors.saturating_mul(2);
+            // Now we will just limit the candidates down to 2 * num_reflectors
+            let mut num_reflectors = self.config.num_reflectors;
+            let candidate_pool_num = (2 * num_reflectors) as usize;
             candidates.truncate(candidate_pool_num);
 
             for (candidate, rtt) in candidates.iter() {
@@ -120,11 +132,21 @@ impl ReflectorSelector {
                 candidates.swap(i, j);
             }
 
-            let take = num_reflectors.min(candidates.len());
-            let mut new_peers = Vec::with_capacity(take);
-            for (peer, _) in &candidates[..take] {
-                new_peers.push(*peer);
+            if (candidates.len() as u8) < num_reflectors {
+                num_reflectors = candidates.len() as u8;
+            }
+
+            let mut new_peers = Vec::new();
+            for i in 0..num_reflectors {
+                let peer = candidates[i as usize].0;
+                new_peers.push(peer);
                 info!("New selected peer: {}", peer);
+                self.metrics.send(Metric::Event {
+                    name: "reflector_selected",
+                    reason: "",
+                    reflector: Some(peer),
+                    tags: &[],
+                });
             }
 
             *reflectors_peers = new_peers;

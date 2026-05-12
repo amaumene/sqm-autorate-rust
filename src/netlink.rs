@@ -1,6 +1,11 @@
+// SPDX-FileCopyrightText: 2022-Present Nils Andreas Svee mailto:contact@lochnair.net (github @Lochnair)
+//
+// SPDX-License-Identifier: MPL-2.0
+
 use std::io;
 use std::str::Utf8Error;
 
+use log::info;
 use netlink_bindings::{rt_link, tc};
 use netlink_socket2::NetlinkSocket;
 use thiserror::Error;
@@ -27,7 +32,6 @@ pub enum NetlinkError {
 
     #[error("Error happened while parsing UTF-8 string")]
     Utf8Error(#[from] Utf8Error),
-
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -42,32 +46,30 @@ impl Netlink {
     pub fn find_interface(ifname: &str) -> Result<i32, NetlinkError> {
         let mut socket = NetlinkSocket::new();
 
-        let mut request = rt_link::Request::new()
-            .op_getlink_do_request(&Default::default());
+        let mut request = rt_link::Request::new().op_getlink_do(&Default::default());
         request.encode().push_ifname_bytes(ifname.as_bytes());
 
         let mut iter = socket.request(&request)?;
-        let (header, _) = iter.recv_one()
+        let (header, _) = iter
+            .recv_one()
             .map_err(|_| NetlinkError::InterfaceNotFound(ifname.to_string()))?;
-        Ok(header.ifi_index())
+        Ok(header.ifi_index)
     }
 
     pub fn get_interface_stats(ifname: &str) -> Result<(u64, u64), NetlinkError> {
         let mut socket = NetlinkSocket::new();
 
-        let mut request = rt_link::Request::new()
-            .op_getlink_do_request(&Default::default());
-        request.encode()
+        let mut request = rt_link::Request::new().op_getlink_do(&Default::default());
+        request
+            .encode()
             .push_ifname_bytes(ifname.as_bytes())
             .push_ext_mask(1 /* RTEXT_FILTER_VF */);
 
         let mut iter = socket.request(&request)?;
         while let Some(reply) = iter.recv() {
             let (_, attrs) = reply?;
-            for attr in attrs {
-                if let Ok(rt_link::OpGetlinkDoReply::Stats64(stats)) = attr {
-                    return Ok((stats.rx_bytes(), stats.tx_bytes()));
-                }
+            if let Ok(stats) = attrs.get_stats64() {
+                return Ok((stats.rx_bytes, stats.tx_bytes));
             }
         }
 
@@ -76,29 +78,25 @@ impl Netlink {
 
     pub fn qdisc_from_ifindex(ifindex: i32, ifname: &str) -> Result<Qdisc, NetlinkError> {
         let mut socket = NetlinkSocket::new();
-        let header = tc::PushTcmsg::new();
-        let request = tc::Request::new().op_getqdisc_dump_request(&header);
+        let header = tc::Tcmsg::new();
+        let request = tc::Request::new().op_getqdisc_dump(&header);
 
         let mut iter = socket.request(&request)?;
         while let Some(reply) = iter.recv() {
             let (header, attrs) = reply?;
 
-            if header.ifindex() == ifindex {
-                let mut is_cake = false;
-                for attr in attrs {
-                    if let Ok(tc::OpGetqdiscDumpReply::Kind(kind)) = attr {
-                        if kind.to_str().map_err(|_| NetlinkError::NlQdiscError("Invalid UTF-8".to_string()))? == "cake" {
-                            is_cake = true;
-                            break;
-                        }
+            if header.ifindex == ifindex {
+                if let Ok(kind) = attrs.get_kind() {
+                    if kind
+                        .to_str()
+                        .map_err(|_| NetlinkError::NlQdiscError("Invalid UTF-8".to_string()))?
+                        == "cake"
+                    {
+                        return Ok(Qdisc {
+                            ifindex,
+                            parent: header.parent,
+                        });
                     }
-                }
-
-                if is_cake {
-                    return Ok(Qdisc {
-                        ifindex,
-                        parent: header.parent(),
-                    });
                 }
             }
         }
@@ -111,18 +109,28 @@ impl Netlink {
         Netlink::qdisc_from_ifindex(ifindex, ifname)
     }
 
-    pub fn set_qdisc_rate(qdisc: Qdisc, bandwidth_kbit: u64) -> Result<(), NetlinkError> {
+    pub fn set_qdisc_rate(
+        qdisc: Qdisc,
+        bandwidth_kbit: u64,
+        dry_run: bool,
+    ) -> Result<(), NetlinkError> {
+        if dry_run {
+            info!(
+                "dry-run: would set qdisc ifindex={} to {} kbit/s",
+                qdisc.ifindex, bandwidth_kbit
+            );
+            return Ok(());
+        }
+
         let mut socket = NetlinkSocket::new();
         let bandwidth = bandwidth_kbit * 1000 / 8;
 
-        let mut header = tc::PushTcmsg::new();
-        header.set_ifindex(qdisc.ifindex);
-        header.set_parent(qdisc.parent);
-
-        let mut request = tc::Request::new()
-            .set_change()
-            .op_newqdisc_do_request(&header);
-        request.encode()
+        let mut header = tc::Tcmsg::new();
+        header.ifindex = qdisc.ifindex;
+        header.parent = qdisc.parent;
+        let mut request = tc::Request::new().set_change().op_newqdisc_do(&header);
+        request
+            .encode()
             .push_kind(c"cake")
             .nested_options_cake()
             .push_base_rate64(bandwidth)

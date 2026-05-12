@@ -1,5 +1,12 @@
+// SPDX-FileCopyrightText: 2022-Present Nils Andreas Svee mailto:contact@lochnair.net (github @Lochnair)
+//
+// SPDX-License-Identifier: MPL-2.0
+
 use anyhow::anyhow;
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+pub type ArcMutex<T> = Arc<Mutex<T>>;
+pub type ArcRwLock<T> = Arc<RwLock<T>>;
 
 pub trait MutexExt<T> {
     fn lock_anyhow(&self) -> anyhow::Result<MutexGuard<'_, T>>;

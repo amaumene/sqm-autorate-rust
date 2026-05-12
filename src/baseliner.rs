@@ -1,11 +1,21 @@
-use crate::pinger::PingReply;
-use crate::util::MutexExt;
+// SPDX-FileCopyrightText: 2022-Present Charles Corrigan mailto:chas-iot@runegate.org (github @chas-iot)
+// SPDX-FileCopyrightText: 2022-Present Daniel Lakeland mailto:dlakelan@street-artists.org (github @dlakelan)
+// SPDX-FileCopyrightText: 2022-Present Mark Baker mailto:mark@vpost.net (github @Fail-Safe)
+// SPDX-FileCopyrightText: 2022-Present Nils Andreas Svee mailto:contact@lochnair.net (github @Lochnair)
+//
+// SPDX-License-Identifier: MPL-2.0
+
 use crate::Config;
-use log::info;
+use crate::SHUTDOWN;
+use crate::metrics::{Metric, MetricsSender};
+use crate::pinger::PingReply;
+use crate::util::ArcMutex;
+use crate::util::MutexExt;
+use flume::{Receiver, Sender};
+use log::{debug, info};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 #[derive(Copy, Clone)]
@@ -17,11 +27,13 @@ pub struct ReflectorStats {
 
 pub struct Baseliner {
     pub config: Config,
-    pub owd_baseline: Arc<Mutex<HashMap<IpAddr, ReflectorStats>>>,
-    pub owd_recent: Arc<Mutex<HashMap<IpAddr, ReflectorStats>>>,
+    pub owd_baseline: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
+    pub owd_recent: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
     pub reselect_trigger: Sender<bool>,
     pub start_time: Instant,
-    pub stats_receiver: Receiver<PingReply>,
+    pub stats_rx: Receiver<PingReply>,
+    pub baseline_metrics: MetricsSender,
+    pub event_metrics: MetricsSender,
 }
 
 fn ewma_factor(tick: f64, dur: f64) -> f64 {
@@ -42,7 +54,11 @@ impl Baseliner {
         let fast_factor = ewma_factor(self.config.tick_interval, 0.4);
 
         loop {
-            let time_data = self.stats_receiver.recv()?;
+            if SHUTDOWN.load(Ordering::Relaxed) {
+                info!("Baseliner shutting down");
+                return Ok(());
+            }
+            let time_data = self.stats_rx.recv()?;
 
             let mut owd_baseline_map = self.owd_baseline.lock_anyhow()?;
             let mut owd_recent_map = self.owd_recent.lock_anyhow()?;
@@ -100,6 +116,12 @@ impl Baseliner {
                     "Reflector {} has OWD > 5 seconds more than baseline, triggering reselection",
                     time_data.reflector
                 );
+                self.event_metrics.send(Metric::Event {
+                    name: "reselection",
+                    reason: "anomaly",
+                    reflector: Some(time_data.reflector),
+                    tags: &[],
+                });
                 // If reselection is disabled this would trigger an error
                 // so just ignore the result
                 let _ = self.reselect_trigger.send(true);
@@ -123,11 +145,19 @@ impl Baseliner {
                 }
             }
 
-            info!(
+            self.baseline_metrics.send(Metric::Baseline {
+                reflector: time_data.reflector,
+                baseline_up_ewma: owd_baseline.up_ewma,
+                baseline_down_ewma: owd_baseline.down_ewma,
+                recent_up_ewma: owd_recent.up_ewma,
+                recent_down_ewma: owd_recent.down_ewma,
+            });
+
+            debug!(
                 "Reflector {} up baseline = {} down baseline = {}",
                 time_data.reflector, owd_baseline.up_ewma, owd_baseline.down_ewma
             );
-            info!(
+            debug!(
                 "Reflector {} up recent = {} down recent = {}",
                 time_data.reflector, owd_recent.up_ewma, owd_recent.down_ewma
             );
