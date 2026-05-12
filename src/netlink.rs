@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use std::cell::RefCell;
 use std::io;
 use std::str::Utf8Error;
 
@@ -11,7 +12,7 @@ use netlink_socket2::NetlinkSocket;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum NetlinkError {
+pub(crate) enum NetlinkError {
     #[error("Couldn't find interface `{0}`")]
     InterfaceNotFound(String),
 
@@ -35,73 +36,91 @@ pub enum NetlinkError {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Qdisc {
+pub(crate) struct Qdisc {
     pub ifindex: i32,
     pub parent: u32,
 }
 
-pub struct Netlink {}
+thread_local! {
+    static NL_SOCKET: RefCell<Option<NetlinkSocket>> = const { RefCell::new(None) };
+}
+
+fn with_socket<F, T>(f: F) -> Result<T, NetlinkError>
+where
+    F: FnOnce(&mut NetlinkSocket) -> Result<T, NetlinkError>,
+{
+    NL_SOCKET.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if guard.is_none() {
+            *guard = Some(NetlinkSocket::new()?);
+        }
+        f(guard.as_mut().unwrap())
+    })
+}
+
+pub(crate) struct Netlink {}
 
 impl Netlink {
     pub fn find_interface(ifname: &str) -> Result<i32, NetlinkError> {
-        let mut socket = NetlinkSocket::new();
+        with_socket(|socket| {
+            let mut request = rt_link::Request::new().op_getlink_do(&Default::default());
+            request.encode().push_ifname_bytes(ifname.as_bytes());
 
-        let mut request = rt_link::Request::new().op_getlink_do(&Default::default());
-        request.encode().push_ifname_bytes(ifname.as_bytes());
-
-        let mut iter = socket.request(&request)?;
-        let (header, _) = iter
-            .recv_one()
-            .map_err(|_| NetlinkError::InterfaceNotFound(ifname.to_string()))?;
-        Ok(header.ifi_index)
+            let mut iter = socket.request(&request)?;
+            let (header, _) = iter
+                .recv_one()
+                .map_err(|_| NetlinkError::InterfaceNotFound(ifname.to_string()))?;
+            Ok(header.ifi_index)
+        })
     }
 
     pub fn get_interface_stats(ifname: &str) -> Result<(u64, u64), NetlinkError> {
-        let mut socket = NetlinkSocket::new();
+        with_socket(|socket| {
+            let mut request = rt_link::Request::new().op_getlink_do(&Default::default());
+            request
+                .encode()
+                .push_ifname_bytes(ifname.as_bytes())
+                .push_ext_mask(1 /* RTEXT_FILTER_VF */);
 
-        let mut request = rt_link::Request::new().op_getlink_do(&Default::default());
-        request
-            .encode()
-            .push_ifname_bytes(ifname.as_bytes())
-            .push_ext_mask(1 /* RTEXT_FILTER_VF */);
-
-        let mut iter = socket.request(&request)?;
-        while let Some(reply) = iter.recv() {
-            let (_, attrs) = reply?;
-            if let Ok(stats) = attrs.get_stats64() {
-                return Ok((stats.rx_bytes, stats.tx_bytes));
+            let mut iter = socket.request(&request)?;
+            while let Some(reply) = iter.recv() {
+                let (_, attrs) = reply?;
+                if let Ok(stats) = attrs.get_stats64() {
+                    return Ok((stats.rx_bytes, stats.tx_bytes));
+                }
             }
-        }
 
-        Err(NetlinkError::NoInterfaceStatsFound(ifname.to_string()))
+            Err(NetlinkError::NoInterfaceStatsFound(ifname.to_string()))
+        })
     }
 
     pub fn qdisc_from_ifindex(ifindex: i32, ifname: &str) -> Result<Qdisc, NetlinkError> {
-        let mut socket = NetlinkSocket::new();
-        let header = tc::Tcmsg::new();
-        let request = tc::Request::new().op_getqdisc_dump(&header);
+        with_socket(|socket| {
+            let header = tc::Tcmsg::new();
+            let request = tc::Request::new().op_getqdisc_dump(&header);
 
-        let mut iter = socket.request(&request)?;
-        while let Some(reply) = iter.recv() {
-            let (header, attrs) = reply?;
+            let mut iter = socket.request(&request)?;
+            while let Some(reply) = iter.recv() {
+                let (header, attrs) = reply?;
 
-            if header.ifindex == ifindex {
-                if let Ok(kind) = attrs.get_kind() {
-                    if kind
-                        .to_str()
-                        .map_err(|_| NetlinkError::NlQdiscError("Invalid UTF-8".to_string()))?
-                        == "cake"
-                    {
-                        return Ok(Qdisc {
-                            ifindex,
-                            parent: header.parent,
-                        });
+                if header.ifindex == ifindex {
+                    if let Ok(kind) = attrs.get_kind() {
+                        if kind
+                            .to_str()
+                            .map_err(|_| NetlinkError::NlQdiscError("Invalid UTF-8".to_string()))?
+                            == "cake"
+                        {
+                            return Ok(Qdisc {
+                                ifindex,
+                                parent: header.parent,
+                            });
+                        }
                     }
                 }
             }
-        }
 
-        Err(NetlinkError::NoQdiscFound(ifname.to_string()))
+            Err(NetlinkError::NoQdiscFound(ifname.to_string()))
+        })
     }
 
     pub fn qdisc_from_ifname(ifname: &str) -> Result<Qdisc, NetlinkError> {
@@ -122,23 +141,24 @@ impl Netlink {
             return Ok(());
         }
 
-        let mut socket = NetlinkSocket::new();
-        let bandwidth = bandwidth_kbit * 1000 / 8;
+        with_socket(|socket| {
+            let bandwidth = bandwidth_kbit * 1000 / 8;
 
-        let mut header = tc::Tcmsg::new();
-        header.ifindex = qdisc.ifindex;
-        header.parent = qdisc.parent;
-        let mut request = tc::Request::new().set_change().op_newqdisc_do(&header);
-        request
-            .encode()
-            .push_kind(c"cake")
-            .nested_options_cake()
-            .push_base_rate64(bandwidth)
-            .end_nested();
+            let mut header = tc::Tcmsg::new();
+            header.ifindex = qdisc.ifindex;
+            header.parent = qdisc.parent;
+            let mut request = tc::Request::new().set_change().op_newqdisc_do(&header);
+            request
+                .encode()
+                .push_kind(c"cake")
+                .nested_options_cake()
+                .push_base_rate64(bandwidth)
+                .end_nested();
 
-        let mut iter = socket.request(&request)?;
-        iter.recv_ack()?;
+            let mut iter = socket.request(&request)?;
+            iter.recv_ack()?;
 
-        Ok(())
+            Ok(())
+        })
     }
 }
