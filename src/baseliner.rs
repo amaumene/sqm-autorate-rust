@@ -18,7 +18,7 @@ use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct ReflectorStats {
     pub down_ewma: f64,
     pub up_ewma: f64,
