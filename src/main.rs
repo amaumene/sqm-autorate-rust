@@ -45,8 +45,10 @@ use crate::reflector_selector::ReflectorSelector;
 pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn signal_handler(_: libc::c_int) {
-    println!("Signal received, shutting down sqm-autorate-rust");
-    SHUTDOWN.store(true, Ordering::Relaxed);
+    // SAFETY: This function is called as a POSIX signal handler.
+    // We only use async-signal-safe operations: AtomicBool::store.
+    // No locks, allocations, or I/O are performed.
+    SHUTDOWN.store(true, Ordering::SeqCst);
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -80,6 +82,10 @@ fn compute_inflight_probe_capacity(
 fn main() -> anyhow::Result<()> {
     println!("Starting sqm-autorate-rust version {}", VERSION);
 
+    // SAFETY: signal_handler only performs async-signal-safe operations
+    // (AtomicBool::store). The cast from fn pointer to sighandler_t is
+    // required by the libc::signal API and is safe because signal_handler
+    // has the correct ABI (extern "C") and signature.
     unsafe {
         libc::signal(
             libc::SIGINT,
