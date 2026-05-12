@@ -194,12 +194,12 @@ impl Config {
             speed_hist_file: Self::get::<String>(
                 "SQMA_SPEED_HIST_FILE",
                 "sqm-autorate-rust.@output[0].speed_hist_file",
-                Some("/tmp/sqm-speedhist.csv".parse()?),
+                Some("/tmp/sqm-speedhist.csv".to_owned()),
             )?,
             stats_file: Self::get::<String>(
                 "SQMA_STATS_FILE",
                 "sqm-autorate-rust.@output[0].stats_file",
-                Some("/tmp/sqm-autorate-rust.csv".parse()?),
+                Some("/tmp/sqm-autorate-rust.csv".to_owned()),
             )?,
             suppress_statistics: Self::get_bool(
                 "SQMA_SUPPRESS_STATISTICS",
@@ -297,7 +297,7 @@ impl Config {
             reflector_list_file: Self::get::<String>(
                 "SQMA_REFLECTOR_LIST_FILE",
                 "sqm-autorate-rust.@advanced_settings[0].reflector_list_file",
-                Some("/etc/sqm-autorate/reflectors-icmp.csv".parse()?),
+                Some("/etc/sqm-autorate/reflectors-icmp.csv".to_owned()),
             )?,
             speed_hist_size: Self::get::<u32>(
                 "SQMA_SPEED_HIST_SIZE",

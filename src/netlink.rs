@@ -52,7 +52,7 @@ where
     NL_SOCKET.with(|cell| {
         let mut guard = cell.borrow_mut();
         if guard.is_none() {
-            *guard = Some(NetlinkSocket::new()?);
+            *guard = Some(NetlinkSocket::new());
         }
         f(guard.as_mut().unwrap())
     })
