@@ -5,7 +5,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-extern crate core;
 
 mod baseliner;
 mod config;
@@ -150,12 +149,12 @@ fn main() -> anyhow::Result<()> {
             metrics_rx: rx,
             metrics_dropped: Arc::clone(&dropped),
         };
-        let err_tx = error_tx.clone();
+        let metrics_err_tx = error_tx.clone();
         let handle = thread::Builder::new()
             .name("metrics".to_string())
             .spawn(move || {
                 if let Err(e) = metrics.run() {
-                    let _ = err_tx.send(e);
+                    let _ = metrics_err_tx.send(e);
                 }
             })?;
         (Some(tx), Some(handle))
@@ -248,7 +247,7 @@ fn main() -> anyhow::Result<()> {
     );
     sleep(settle_sleep_time);
 
-    let err_tx = error_tx.clone();
+    let listener_err_tx = error_tx.clone();
     let reflector_peers_lock_clone = reflector_peers_lock.clone();
     let inflight_listener = inflight.clone();
     thread::Builder::new()
@@ -262,20 +261,20 @@ fn main() -> anyhow::Result<()> {
                 baseliner_stats_tx,
                 ping_metrics,
             ) {
-                let _ = err_tx.send(e);
+                let _ = listener_err_tx.send(e);
             }
         })?;
 
-    let err_tx = error_tx.clone();
+    let baseliner_err_tx = error_tx.clone();
     thread::Builder::new()
         .name("baseliner".to_string())
         .spawn(move || {
             if let Err(e) = baseliner.run() {
-                let _ = err_tx.send(e);
+                let _ = baseliner_err_tx.send(e);
             }
         })?;
 
-    let err_tx = error_tx.clone();
+    let sender_err_tx = error_tx.clone();
     let reflector_peers_lock_clone = reflector_peers_lock.clone();
     let inflight_sender = inflight.clone();
     thread::Builder::new()
@@ -288,7 +287,7 @@ fn main() -> anyhow::Result<()> {
                 inflight_sender,
                 config.tick_interval,
             ) {
-                let _ = err_tx.send(e);
+                let _ = sender_err_tx.send(e);
             }
         })?;
 
@@ -303,12 +302,12 @@ fn main() -> anyhow::Result<()> {
             trigger_channel: reselect_rx,
             metrics: event_metrics,
         };
-        let err_tx = error_tx.clone();
+        let reselect_err_tx = error_tx.clone();
         thread::Builder::new()
             .name("reselection".to_string())
             .spawn(move || {
                 if let Err(e) = reflector_selector.run() {
-                    let _ = err_tx.send(e);
+                    let _ = reselect_err_tx.send(e);
                 }
             })?;
     }
@@ -352,12 +351,12 @@ fn main() -> anyhow::Result<()> {
         config.upload_interface, ul_direction
     );
 
-    let err_tx = error_tx.clone();
+    let ratecontroller_err_tx = error_tx.clone();
     thread::Builder::new()
         .name("ratecontroller".to_string())
         .spawn(move || {
             if let Err(e) = ratecontroller.run() {
-                let _ = err_tx.send(e);
+                let _ = ratecontroller_err_tx.send(e);
             }
         })?;
 
