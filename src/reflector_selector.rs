@@ -18,7 +18,7 @@ use std::sync::{Arc, RwLock};
 use std::thread::sleep;
 use std::time::Duration;
 
-pub struct ReflectorSelector {
+pub(crate) struct ReflectorSelector {
     pub config: Config,
     pub owd_recent: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
     pub reflector_peers_lock: Arc<RwLock<Vec<IpAddr>>>,
@@ -28,7 +28,7 @@ pub struct ReflectorSelector {
 }
 
 impl ReflectorSelector {
-    pub fn run(&self) -> anyhow::Result<()> {
+    pub fn run(self) -> anyhow::Result<()> {
         let mut selector_sleep_time = Duration::new(30, 0);
         let mut reselection_count = 0;
         let baseline_sleep_time =

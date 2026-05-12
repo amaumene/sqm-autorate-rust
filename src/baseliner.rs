@@ -19,13 +19,13 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 #[derive(Clone)]
-pub struct ReflectorStats {
+pub(crate) struct ReflectorStats {
     pub down_ewma: f64,
     pub up_ewma: f64,
     pub last_receive_time_s: Instant,
 }
 
-pub struct Baseliner {
+pub(crate) struct Baseliner {
     pub config: Config,
     pub owd_baseline: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
     pub owd_recent: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
@@ -41,7 +41,7 @@ fn ewma_factor(tick: f64, dur: f64) -> f64 {
 }
 
 impl Baseliner {
-    pub fn run(&self) -> anyhow::Result<()> {
+    pub fn run(self) -> anyhow::Result<()> {
         /*
          * 135 seconds to decay to 50% for the slow factor and
          * 0.4 seconds to decay to 50% for the fast factor.
