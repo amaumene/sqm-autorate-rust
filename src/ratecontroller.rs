@@ -23,6 +23,27 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+/// Conversion factor from bytes/sec delta to kbits/sec.
+const BYTES_TO_KBITS: f64 = 8.0 / 1000.0;
+/// Minimum number of delta samples required for rate control.
+const MIN_DELTA_SAMPLES: usize = 5;
+/// Fraction of current rate to increase when load is high and delay is low.
+const RATE_INCREASE_FRACTION: f64 = 0.1;
+/// Fraction of base rate to add as a floor during rate increases.
+const RATE_INCREASE_BASE_FLOOR: f64 = 0.03;
+/// Fraction of current rate*load to use when decreasing due to high delay.
+const RATE_DECREASE_FRACTION: f64 = 0.9;
+/// Initial shaping rate as fraction of base rate on startup.
+const INITIAL_RATE_FRACTION: f64 = 0.6;
+/// Minimum fraction of base for initial speed history generation.
+const INITIAL_SPEED_BASE_MIN: f64 = 0.75;
+/// Jitter range for initial speed history randomization.
+const INITIAL_SPEED_JITTER: f64 = 0.2;
+/// Interval in seconds between speed history dumps.
+const SPEED_HIST_DUMP_INTERVAL_S: f64 = 300.0;
+/// Maximum data age multiplier relative to tick interval.
+const MAX_DATA_AGE_TICKS: f64 = 2.0;
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Direction {
     Down,
@@ -41,16 +62,18 @@ pub(crate) enum StatsDirection {
     TX,
 }
 
+#[must_use]
 fn generate_initial_speeds(base_speed: f64, size: u32) -> Vec<f64> {
     let mut rates = Vec::new();
 
     for _ in 0..size {
-        rates.push((fastrand::f64() * 0.2 + 0.75) * base_speed);
+        rates.push((fastrand::f64() * INITIAL_SPEED_JITTER + INITIAL_SPEED_BASE_MIN) * base_speed);
     }
 
     rates
 }
 
+#[must_use]
 fn get_interface_stats(
     config: &Config,
     down_direction: StatsDirection,
@@ -156,7 +179,7 @@ impl Ratecontroller {
                  *    i. convert to a pre-computed factor
                  *    ii. ideally, see if it can be defined in terms of constants, eg ticks per second and number of active reflectors
                  */
-                state.utilisation = (8.0 / 1000.0)
+                state.utilisation = BYTES_TO_KBITS
                     * (state.current_bytes as f64 - state.previous_bytes as f64)
                     / dur.as_secs_f64();
                 state.load = state.utilisation / state.current_rate;
@@ -169,8 +192,8 @@ impl Ratecontroller {
                         .max_by(|a, b| a.total_cmp(b))
                         .unwrap_or(&base_rate);
                     state.next_rate = state.current_rate
-                        * (1.0 + 0.1 * (1.0_f64 - state.current_rate / max_rate).max(0.0))
-                        + (base_rate * 0.03);
+                        * (1.0 + RATE_INCREASE_FRACTION * (1.0_f64 - state.current_rate / max_rate).max(0.0))
+                        + (base_rate * RATE_INCREASE_BASE_FLOOR);
                     state.nrate += 1;
                     state.nrate %= self.config.speed_hist_size as usize;
                 }
@@ -181,10 +204,10 @@ impl Ratecontroller {
                         .get(fastrand::usize(..state.safe_rates.len()))
                     {
                         Some(rnd_rate) => {
-                            state.next_rate = rnd_rate.min(0.9 * state.current_rate * state.load);
+                            state.next_rate = rnd_rate.min(RATE_DECREASE_FRACTION * state.current_rate * state.load);
                         }
                         None => {
-                            state.next_rate = 0.9 * state.current_rate * state.load;
+                            state.next_rate = RATE_DECREASE_FRACTION * state.current_rate * state.load;
                         }
                     }
                 }
@@ -206,6 +229,8 @@ impl Ratecontroller {
         state_ul.deltas.clear();
 
         let now_t = Instant::now();
+        // Lock ordering: owd_baseline → owd_recent → reflector_peers_lock.
+        // All three acquired in a consistent order to prevent deadlocks.
         let owd_baseline = self.owd_baseline.lock_anyhow()?;
         let owd_recent = self.owd_recent.lock_anyhow()?;
         let reflectors = self.reflectors_lock.read_anyhow()?;
@@ -217,7 +242,7 @@ impl Ratecontroller {
                 && now_t
                     .duration_since(owd_recent[reflector].last_receive_time_s)
                     .as_secs_f64()
-                    < self.config.tick_interval * 2.0
+                    < self.config.tick_interval * MAX_DATA_AGE_TICKS
             {
                 state_dl
                     .deltas
@@ -239,7 +264,7 @@ impl Ratecontroller {
         state_dl.deltas.sort_by(|a, b| a.total_cmp(b));
         state_ul.deltas.sort_by(|a, b| a.total_cmp(b));
 
-        if state_dl.deltas.len() < 5 || state_ul.deltas.len() < 5 {
+        if state_dl.deltas.len() < MIN_DELTA_SAMPLES || state_ul.deltas.len() < MIN_DELTA_SAMPLES {
             // trigger reselection
             warn!(
                 "Not enough delta values (D: {}, U: {}, need 5), triggering reselection",
@@ -292,8 +317,8 @@ impl Ratecontroller {
         let mut lastdump_t = Instant::now();
 
         // set qdisc rates to 60% of base rate to make sure we start with sane baselines
-        self.state_dl.current_rate = self.config.download_base_kbits * 0.6;
-        self.state_ul.current_rate = self.config.upload_base_kbits * 0.6;
+        self.state_dl.current_rate = self.config.download_base_kbits * INITIAL_RATE_FRACTION;
+        self.state_ul.current_rate = self.config.upload_base_kbits * INITIAL_RATE_FRACTION;
 
         Netlink::set_qdisc_rate(
             self.state_dl.qdisc,
@@ -466,7 +491,7 @@ impl Ratecontroller {
             }
 
             if let Some(ref mut fd) = speed_hist_fd {
-                if now_t.duration_since(lastdump_t).as_secs_f64() > 300.0 {
+                if now_t.duration_since(lastdump_t).as_secs_f64() > SPEED_HIST_DUMP_INTERVAL_S {
                     for i in 0..self.config.speed_hist_size as usize {
                         let hist_time = Time::new(ClockId::Realtime);
                         if let Err(e) = write!(

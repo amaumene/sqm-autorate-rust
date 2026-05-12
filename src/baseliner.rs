@@ -18,6 +18,15 @@ use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+/// EWMA half-life for the slow (baseline) factor, in seconds.
+const BASELINE_DECAY_HALF_LIFE_S: f64 = 135.0;
+/// EWMA half-life for the fast (recent) factor, in seconds.
+const RECENT_DECAY_HALF_LIFE_S: f64 = 0.4;
+/// If no data received from a reflector for this many seconds, reset EWMA.
+const STALE_DATA_RESET_S: f64 = 30.0;
+/// OWD increase beyond this threshold (ms) triggers reflector reselection.
+const ANOMALY_OWD_THRESHOLD_MS: f64 = 5000.0;
+
 #[derive(Clone)]
 pub(crate) struct ReflectorStats {
     pub down_ewma: f64,
@@ -36,6 +45,7 @@ pub(crate) struct Baseliner {
     pub event_metrics: MetricsSender,
 }
 
+#[must_use]
 fn ewma_factor(tick: f64, dur: f64) -> f64 {
     ((0.5_f64).ln() / (dur / tick)).exp()
 }
@@ -50,8 +60,8 @@ impl Baseliner {
          * aren't bloat related, with less sensitivity (bigger numbers) we smooth through quick spikes
          * but take longer to respond to real bufferbloat
          */
-        let slow_factor = ewma_factor(self.config.tick_interval, 135.0);
-        let fast_factor = ewma_factor(self.config.tick_interval, 0.4);
+        let slow_factor = ewma_factor(self.config.tick_interval, BASELINE_DECAY_HALF_LIFE_S);
+        let fast_factor = ewma_factor(self.config.tick_interval, RECENT_DECAY_HALF_LIFE_S);
 
         loop {
             if SHUTDOWN.load(Ordering::Relaxed) {
@@ -60,6 +70,9 @@ impl Baseliner {
             }
             let time_data = self.stats_rx.recv()?;
 
+            // Lock ordering: owd_baseline → owd_recent.
+            // Both must be held to compute EWMA updates atomically.
+            // No other lock is held while acquiring these.
             // Hold locks only while mutating the maps; release before I/O
             let (baseline_up_ewma, baseline_down_ewma, recent_up_ewma, recent_down_ewma) = {
                 let mut owd_baseline_map = self.owd_baseline.lock_anyhow()?;
@@ -89,12 +102,12 @@ impl Baseliner {
                     .last_receive_time_s
                     .duration_since(owd_baseline.last_receive_time_s)
                     .as_secs_f64()
-                    > 30.0
+                    > STALE_DATA_RESET_S
                     || time_data
                         .last_receive_time_s
                         .duration_since(owd_recent.last_receive_time_s)
                         .as_secs_f64()
-                        > 30.0
+                        > STALE_DATA_RESET_S
                 {
                     owd_baseline.down_ewma = time_data.down_time;
                     owd_baseline.up_ewma = time_data.up_time;
@@ -108,8 +121,8 @@ impl Baseliner {
                 owd_recent.last_receive_time_s = time_data.last_receive_time_s;
 
                 // if this reflection is more than 5 seconds higher than baseline... mark it no good and trigger a reselection
-                if time_data.up_time > owd_baseline.up_ewma + 5000.0
-                    || time_data.down_time > owd_baseline.down_ewma + 5000.0
+                if time_data.up_time > owd_baseline.up_ewma + ANOMALY_OWD_THRESHOLD_MS
+                    || time_data.down_time > owd_baseline.down_ewma + ANOMALY_OWD_THRESHOLD_MS
                 {
                     // mark the data as bad by setting the receive time to the time autorate was started
                     owd_baseline.last_receive_time_s = self.start_time;

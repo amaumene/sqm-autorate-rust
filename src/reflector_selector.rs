@@ -18,6 +18,15 @@ use std::sync::{Arc, RwLock};
 use std::thread::sleep;
 use std::time::Duration;
 
+/// Initial reselection interval before slowing down, in seconds.
+const INITIAL_RESELECTION_SLEEP_S: u64 = 30;
+/// Number of reselections before switching to slower interval.
+const FAST_RESELECTION_COUNT: u32 = 40;
+/// Number of random candidates to consider per reselection cycle.
+const RESELECTION_CANDIDATES: usize = 20;
+/// Multiplier for candidate pool size relative to num_reflectors.
+const CANDIDATE_POOL_FACTOR: u8 = 2;
+
 pub(crate) struct ReflectorSelector {
     pub config: Config,
     pub owd_recent: ArcMutex<HashMap<IpAddr, ReflectorStats>>,
@@ -29,7 +38,7 @@ pub(crate) struct ReflectorSelector {
 
 impl ReflectorSelector {
     pub fn run(self) -> anyhow::Result<()> {
-        let mut selector_sleep_time = Duration::new(30, 0);
+        let mut selector_sleep_time = Duration::new(INITIAL_RESELECTION_SLEEP_S, 0);
         let mut reselection_count = 0;
         let baseline_sleep_time =
             Duration::from_secs_f64(self.config.tick_interval * std::f64::consts::PI);
@@ -60,10 +69,13 @@ impl ReflectorSelector {
             });
 
             // After 40 reselections, slow down to every 15 minutes
-            if reselection_count > 40 {
+            if reselection_count > FAST_RESELECTION_COUNT {
                 selector_sleep_time = Duration::new(self.config.peer_reselection_time * 60, 0);
             }
 
+            // Lock ordering: reflector_peers_lock → owd_recent.
+            // Acquire write lock on peers, compute candidates, release,
+            // then acquire owd_recent for RTT sorting.
             let mut next_peers: Vec<IpAddr> = Vec::new();
             let mut reflectors_peers = self.reflector_peers_lock.write_anyhow()?;
 
@@ -73,7 +85,7 @@ impl ReflectorSelector {
                 next_peers.push(*reflector);
             }
 
-            for _ in 0..20 {
+            for _ in 0..RESELECTION_CANDIDATES {
                 let next_candidate =
                     &self.reflector_pool[fastrand::usize(..self.reflector_pool.len())];
                 if next_peers.contains(next_candidate) {
@@ -119,7 +131,7 @@ impl ReflectorSelector {
 
             // Now we will just limit the candidates down to 2 * num_reflectors
             let mut num_reflectors = self.config.num_reflectors;
-            let candidate_pool_num = (2 * num_reflectors) as usize;
+            let candidate_pool_num = (CANDIDATE_POOL_FACTOR * num_reflectors) as usize;
             candidates.truncate(candidate_pool_num);
 
             for (candidate, rtt) in candidates.iter() {
