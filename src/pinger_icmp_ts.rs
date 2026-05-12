@@ -15,9 +15,9 @@ use rustix::thread::ClockId;
 use std::net::IpAddr;
 use std::time::Instant;
 
-pub struct PingerICMPTimestampListener {}
+pub(crate) struct PingerICMPTimestampListener {}
 
-pub struct PingerICMPTimestampSender {}
+pub(crate) struct PingerICMPTimestampSender {}
 
 impl PingListener for PingerICMPTimestampListener {
     // Result: RTT, down time, up time

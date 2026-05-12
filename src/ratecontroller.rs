@@ -30,13 +30,13 @@ enum Direction {
 }
 
 #[derive(Debug, Error)]
-pub enum RatecontrolError {
+pub(crate) enum RatecontrolError {
     #[error("Netlink error")]
     Netlink(#[from] NetlinkError),
 }
 
 #[derive(Copy, Clone, Debug)]
-pub enum StatsDirection {
+pub(crate) enum StatsDirection {
     RX,
     TX,
 }
@@ -107,7 +107,7 @@ impl State {
     }
 }
 
-pub struct Ratecontroller {
+pub(crate) struct Ratecontroller {
     config: Config,
     down_direction: StatsDirection,
     owd_baseline: ArcMutex<HashMap<IpAddr, ReflectorStats>>,

@@ -8,7 +8,7 @@ use rustix::thread::ClockId;
 use crate::time::Time;
 
 #[derive(Clone, Copy)]
-pub struct SimpleLogger {
+pub(crate) struct SimpleLogger {
     pub level: Level,
 }
 

@@ -22,7 +22,7 @@ use std::{io, thread};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum PingError {
+pub(crate) enum PingError {
     #[error("Couldn't parse number")]
     InvalidNumber(#[from] io::Error),
     #[error("Error parsing packet")]
@@ -33,7 +33,7 @@ pub enum PingError {
     WrongID { expected: u16, found: u16 },
 }
 
-pub struct PingReply {
+pub(crate) struct PingReply {
     pub reflector: IpAddr,
     pub measurement_type: MeasurementType,
     pub seq: u16,
@@ -48,13 +48,13 @@ pub struct PingReply {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct InFlightProbe {
+pub(crate) struct InFlightProbe {
     pub sent_at: Instant,
     pub originate_timestamp: i64,
 }
 
-pub type InFlightProbeKey = (IpAddr, MeasurementType, u16);
-pub type InFlightProbeCache = Arc<Mutex<HashMap<InFlightProbeKey, InFlightProbe>>>;
+pub(crate) type InFlightProbeKey = (IpAddr, MeasurementType, u16);
+pub(crate) type InFlightProbeCache = Arc<Mutex<HashMap<InFlightProbeKey, InFlightProbe>>>;
 const INFLIGHT_PROBE_TTL: Duration = Duration::from_secs(30);
 
 fn open_socket(type_: MeasurementType) -> io::Result<IcmpSocket4> {
@@ -67,7 +67,7 @@ fn open_socket(type_: MeasurementType) -> io::Result<IcmpSocket4> {
     }
 }
 
-pub trait PingListener {
+pub(crate) trait PingListener {
     fn listen(
         &mut self,
         id: u16,
@@ -150,7 +150,7 @@ pub trait PingListener {
     ) -> Result<PingReply, PingError>;
 }
 
-pub trait PingSender {
+pub(crate) trait PingSender {
     fn send(
         &mut self,
         id: u16,

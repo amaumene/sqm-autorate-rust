@@ -21,7 +21,7 @@ use std::{env, io};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum ConfigError {
+pub(crate) enum ConfigError {
     #[error("Invalid measurement type")]
     InvalidMeasurementType(String),
     #[error("Invalid config value for `{0}`: {1}")]
@@ -59,7 +59,7 @@ impl FromStr for FlexiBool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MeasurementType {
+pub(crate) enum MeasurementType {
     Icmp = 1,
     IcmpTimestamps,
     Ntp,
@@ -92,7 +92,7 @@ impl FromStr for MeasurementType {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum ObservabilityProtocol {
+pub(crate) enum ObservabilityProtocol {
     Udp,
     Tcp,
 }
@@ -110,7 +110,7 @@ impl FromStr for ObservabilityProtocol {
 }
 
 #[derive(Clone, Debug)]
-pub struct Config {
+pub(crate) struct Config {
     // Network section
     pub download_interface: String,
     pub upload_interface: String,

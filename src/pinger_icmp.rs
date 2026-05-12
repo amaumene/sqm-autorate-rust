@@ -16,9 +16,9 @@ use icmp_socket2::Icmpv4Packet;
 use icmp_socket2::packet::WithEchoRequest;
 use rustix::thread::ClockId;
 
-pub struct PingerICMPEchoListener {}
+pub(crate) struct PingerICMPEchoListener {}
 
-pub struct PingerICMPEchoSender {}
+pub(crate) struct PingerICMPEchoSender {}
 
 impl PingListener for PingerICMPEchoListener {
     // Result: RTT, down time, up time

@@ -5,10 +5,10 @@
 use anyhow::anyhow;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-pub type ArcMutex<T> = Arc<Mutex<T>>;
-pub type ArcRwLock<T> = Arc<RwLock<T>>;
+pub(crate) type ArcMutex<T> = Arc<Mutex<T>>;
+pub(crate) type ArcRwLock<T> = Arc<RwLock<T>>;
 
-pub trait MutexExt<T> {
+pub(crate) trait MutexExt<T> {
     fn lock_anyhow(&self) -> anyhow::Result<MutexGuard<'_, T>>;
 }
 
@@ -18,7 +18,7 @@ impl<T> MutexExt<T> for Mutex<T> {
     }
 }
 
-pub trait RwLockExt<T> {
+pub(crate) trait RwLockExt<T> {
     fn read_anyhow(&self) -> anyhow::Result<RwLockReadGuard<'_, T>>;
     fn write_anyhow(&self) -> anyhow::Result<RwLockWriteGuard<'_, T>>;
 }
