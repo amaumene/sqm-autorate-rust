@@ -61,6 +61,7 @@ where
 pub(crate) struct Netlink {}
 
 impl Netlink {
+    #[must_use]
     pub fn find_interface(ifname: &str) -> Result<i32, NetlinkError> {
         with_socket(|socket| {
             let mut request = rt_link::Request::new().op_getlink_do(&Default::default());
@@ -74,6 +75,7 @@ impl Netlink {
         })
     }
 
+    #[must_use]
     pub fn get_interface_stats(ifname: &str) -> Result<(u64, u64), NetlinkError> {
         with_socket(|socket| {
             let mut request = rt_link::Request::new().op_getlink_do(&Default::default());
@@ -94,6 +96,7 @@ impl Netlink {
         })
     }
 
+    #[must_use]
     pub fn qdisc_from_ifindex(ifindex: i32, ifname: &str) -> Result<Qdisc, NetlinkError> {
         with_socket(|socket| {
             let header = tc::Tcmsg::new();
@@ -123,6 +126,7 @@ impl Netlink {
         })
     }
 
+    #[must_use]
     pub fn qdisc_from_ifname(ifname: &str) -> Result<Qdisc, NetlinkError> {
         let ifindex = Netlink::find_interface(ifname)?;
         Netlink::qdisc_from_ifindex(ifindex, ifname)

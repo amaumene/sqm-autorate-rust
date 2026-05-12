@@ -157,6 +157,7 @@ pub(crate) struct Config {
 }
 
 impl Config {
+    #[must_use]
     pub fn new() -> Result<Self, ConfigError> {
         let config = Self {
             // Network section
@@ -446,6 +447,7 @@ impl Config {
         None
     }
 
+    #[must_use]
     pub fn load_reflectors(&self) -> Result<Vec<IpAddr>> {
         let lines = read_lines(self.reflector_list_file.clone()).map_err(|e| {
             ConfigError::ReflectorListNotFound(
