@@ -117,12 +117,12 @@ fn main() -> anyhow::Result<()> {
     let reflector_pool_size = reflectors.len();
 
     let default_reflectors = [
-        IpAddr::from_str("9.9.9.9")?,
-        IpAddr::from_str("8.238.120.14")?,
-        IpAddr::from_str("74.82.42.42")?,
-        IpAddr::from_str("194.242.2.2")?,
-        IpAddr::from_str("208.67.222.222")?,
-        IpAddr::from_str("94.140.14.14")?,
+        IpAddr::from_str("9.9.9.9").expect("hardcoded default reflector IP is valid"),
+        IpAddr::from_str("8.238.120.14").expect("hardcoded default reflector IP is valid"),
+        IpAddr::from_str("74.82.42.42").expect("hardcoded default reflector IP is valid"),
+        IpAddr::from_str("194.242.2.2").expect("hardcoded default reflector IP is valid"),
+        IpAddr::from_str("208.67.222.222").expect("hardcoded default reflector IP is valid"),
+        IpAddr::from_str("94.140.14.14").expect("hardcoded default reflector IP is valid"),
     ];
 
     match reflector_pool_size > config.num_reflectors as usize {
@@ -197,7 +197,10 @@ fn main() -> anyhow::Result<()> {
             Box::new(PingerICMPTimestampSender {}) as Box<dyn PingSender + Send>,
         ),
         MeasurementType::Ntp | MeasurementType::TcpTimestamps => {
-            todo!()
+            return Err(anyhow::anyhow!(
+                "{} measurement type is not yet implemented",
+                config.measurement_type
+            ));
         }
     };
     let reselection_enabled = reflector_pool_size > config.num_reflectors as usize;
