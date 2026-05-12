@@ -60,9 +60,10 @@ const INFLIGHT_PROBE_TTL: Duration = Duration::from_secs(30);
 fn open_socket(type_: MeasurementType) -> io::Result<IcmpSocket4> {
     match type_ {
         MeasurementType::Icmp | MeasurementType::IcmpTimestamps => IcmpSocket4::new(),
-        _ => {
-            unimplemented!()
-        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported measurement type for socket",
+        )),
     }
 }
 
@@ -161,7 +162,7 @@ pub trait PingSender {
         let mut socket = open_socket(type_)?;
 
         let mut seq: u16 = 0;
-        let tick_duration_ms: u16 = (tick_interval * 1000.0) as u16;
+        let tick_duration_ms: u64 = (tick_interval * 1000.0) as u64;
 
         loop {
             if SHUTDOWN.load(Ordering::Relaxed) {
@@ -175,7 +176,7 @@ pub trait PingSender {
             drop(reflectors_unlocked);
 
             if reflectors.is_empty() {
-                thread::sleep(Duration::from_millis(tick_duration_ms as u64));
+                thread::sleep(Duration::from_millis(tick_duration_ms));
                 continue;
             }
 
@@ -184,12 +185,15 @@ pub trait PingSender {
                 .retain(|_, probe| probe.sent_at.elapsed() < INFLIGHT_PROBE_TTL);
 
             let sleep_duration =
-                Duration::from_millis((tick_duration_ms / reflectors.len() as u16) as u64);
+                Duration::from_millis(tick_duration_ms / reflectors.len() as u64);
 
             for reflector in reflectors.iter() {
                 let addr: Ipv4Addr = match reflector {
                     IpAddr::V4(ipv4) => *ipv4,
-                    IpAddr::V6(_) => unimplemented!(),
+                    IpAddr::V6(_) => return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "IPv6 reflectors are not yet supported",
+                    ).into()),
                 };
 
                 let (packet, originate_timestamp) = self.craft_packet(id, seq);
