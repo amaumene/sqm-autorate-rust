@@ -32,6 +32,8 @@ pub enum ConfigError {
     MissingValue(String),
     #[error("Reflector list not found at: {0}")]
     ReflectorListNotFound(String),
+    #[error("Invalid observability protocol: {0}")]
+    InvalidProtocol(String),
 }
 
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
@@ -53,12 +55,6 @@ impl FromStr for FlexiBool {
             "0" | "false" | "no" | "n" | "off" | "disabled" => Ok(FlexiBool(false)),
             _ => Err(ConfigError::ParseError(s.to_string())),
         }
-    }
-}
-
-impl From<FlexiBool> for bool {
-    fn from(f: FlexiBool) -> bool {
-        f.0
     }
 }
 
@@ -108,7 +104,7 @@ impl FromStr for ObservabilityProtocol {
         match s.to_lowercase().as_str() {
             "udp" => Ok(ObservabilityProtocol::Udp),
             "tcp" => Ok(ObservabilityProtocol::Tcp),
-            _ => Err(ConfigError::InvalidMeasurementType(s.to_string())),
+            _ => Err(ConfigError::InvalidProtocol(s.to_string())),
         }
     }
 }
@@ -161,7 +157,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> Result<Self, ConfigError> {
         let config = Self {
             // Network section
             download_base_kbits: Self::get::<f64>(
