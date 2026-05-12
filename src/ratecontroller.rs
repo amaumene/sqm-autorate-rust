@@ -16,7 +16,7 @@ use log::{debug, info, warn};
 use rustix::thread::ClockId;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::thread::sleep;
@@ -167,7 +167,7 @@ impl Ratecontroller {
                         .safe_rates
                         .iter()
                         .max_by(|a, b| a.total_cmp(b))
-                        .unwrap();
+                        .unwrap_or(&base_rate);
                     state.next_rate = state.current_rate
                         * (1.0 + 0.1 * (1.0_f64 - state.current_rate / max_rate).max(0.0))
                         + (base_rate * 0.03);
@@ -227,10 +227,10 @@ impl Ratecontroller {
                     .push(owd_recent[reflector].up_ewma - owd_baseline[reflector].up_ewma);
 
                 debug!(
-                    "Reflector: {} down_delay: {} up_delay: {}",
+                    "Reflector: {} down_delay: {:?} up_delay: {:?}",
                     reflector,
-                    state_dl.deltas.last().unwrap(),
-                    state_ul.deltas.last().unwrap()
+                    state_dl.deltas.last(),
+                    state_ul.deltas.last()
                 );
             }
         }
@@ -306,33 +306,32 @@ impl Ratecontroller {
             self.config.dry_run,
         )?;
 
-        let mut speed_hist_fd: Option<File> = None;
-        let mut speed_hist_fd_inner: File;
-        let mut stats_fd: Option<File> = None;
-        let mut stats_fd_inner: File;
+        let mut speed_hist_fd: Option<BufWriter<File>> = None;
+        let mut speed_hist_fd_inner: BufWriter<File>;
+        let mut stats_fd: Option<BufWriter<File>> = None;
+        let mut stats_fd_inner: BufWriter<File>;
 
         if !self.config.suppress_statistics {
-            speed_hist_fd_inner = File::options()
+            speed_hist_fd_inner = BufWriter::new(File::options()
                 .create(true)
                 .write(true)
                 .truncate(true)
-                .open(self.config.speed_hist_file.as_str())?;
+                .open(self.config.speed_hist_file.as_str())?);
 
-            speed_hist_fd_inner.write_all("time,counter,upspeed,downspeed\n".as_bytes())?;
-            speed_hist_fd_inner.flush()?;
+            write!(speed_hist_fd_inner, "time,counter,upspeed,downspeed\n")?;
 
             speed_hist_fd = Some(speed_hist_fd_inner);
 
-            stats_fd_inner = File::options()
+            stats_fd_inner = BufWriter::new(File::options()
                 .create(true)
                 .write(true)
                 .truncate(true)
-                .open(self.config.stats_file.as_str())?;
+                .open(self.config.stats_file.as_str())?);
 
-            stats_fd_inner.write_all(
-                "times,timens,rxload,txload,deltadelaydown,deltadelayup,dlrate,uprate\n".as_bytes(),
+            write!(
+                stats_fd_inner,
+                "times,timens,rxload,txload,deltadelaydown,deltadelayup,dlrate,uprate\n"
             )?;
-            stats_fd_inner.flush()?;
 
             stats_fd = Some(stats_fd_inner);
         }
@@ -447,19 +446,17 @@ impl Ratecontroller {
                 });
 
                 if let Some(ref mut fd) = stats_fd {
-                    if let Err(e) = fd.write_all(
-                        format!(
-                            "{},{},{},{},{},{},{},{}\n",
-                            stats_time.secs(),
-                            stats_time.nsecs(),
-                            self.state_dl.load,
-                            self.state_ul.load,
-                            self.state_dl.delta_stat,
-                            self.state_ul.delta_stat,
-                            self.state_dl.current_rate as u64,
-                            self.state_ul.current_rate as u64
-                        )
-                        .as_bytes(),
+                    if let Err(e) = write!(
+                        fd,
+                        "{},{},{},{},{},{},{},{}\n",
+                        stats_time.secs(),
+                        stats_time.nsecs(),
+                        self.state_dl.load,
+                        self.state_ul.load,
+                        self.state_dl.delta_stat,
+                        self.state_ul.delta_stat,
+                        self.state_dl.current_rate as u64,
+                        self.state_ul.current_rate as u64
                     ) {
                         warn!("Failed to write statistics: {}", e);
                     }
@@ -472,15 +469,13 @@ impl Ratecontroller {
                 if now_t.duration_since(lastdump_t).as_secs_f64() > 300.0 {
                     for i in 0..self.config.speed_hist_size as usize {
                         let hist_time = Time::new(ClockId::Realtime);
-                        if let Err(e) = fd.write_all(
-                            format!(
-                                "{},{},{},{}\n",
-                                hist_time.as_secs_f64(),
-                                i,
-                                self.state_ul.safe_rates[i],
-                                self.state_dl.safe_rates[i]
-                            )
-                            .as_bytes(),
+                        if let Err(e) = write!(
+                            fd,
+                            "{},{},{},{}\n",
+                            hist_time.as_secs_f64(),
+                            i,
+                            self.state_ul.safe_rates[i],
+                            self.state_dl.safe_rates[i]
                         ) {
                             warn!("Failed to write speed history file: {}", e);
                         }
